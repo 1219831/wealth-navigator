@@ -34,13 +34,14 @@ if 'ocr_data' not in st.session_state:
 
 # --- AI解析関数（OCR） ---
 def perform_ai_analysis(uploaded_files):
-    prompt = """
+prompt = """
     松井証券の資産状況スクショから数値を抽出してください。
-    1. 現物買付余力（現金）
-    2. 現物時価総額
-    3. 信用評価損益（マイナスなら - を付ける）
+    1. 日付（画像内にあればその日付、なければ2026/01/01形式で推測）
+    2. 現物買付余力
+    3. 現物時価総額
+    4. 信用評価損益（マイナスなら - を付ける）
     以下のJSON形式のみで出力してください。
-    {"cash": 123, "spot": 456, "margin": -789}
+    {"date": "2026/03/01", "cash": 123, "spot": 456, "margin": -789}
     """
     try:
         img = Image.open(uploaded_files[0])
