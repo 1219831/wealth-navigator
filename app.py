@@ -111,10 +111,10 @@ if st.session_state.analyzed:
         spot = st.number_input("現物時価総額", value=int(st.session_state.ocr_data.get('spot', 0)))
         margin = st.number_input("信用評価損益", value=int(st.session_state.ocr_data.get('margin', 0)))
         
-        if st.form_submit_button("この内容で記録する"):
+if st.form_submit_button("この内容で記録する"):
             new_total = cash + spot + margin
             new_entry = pd.DataFrame([{
-                "日付": datetime.now().strftime('%Y/%m/%d'),
+                "日付": datetime.now().strftime('%Y/%m/%d'), # ※ここを後でAI読取に変更可能
                 "現物買付余力": cash,
                 "現物時価総額": spot,
                 "信用評価損益": margin,
@@ -123,12 +123,23 @@ if st.session_state.analyzed:
             }])
             
             try:
-                # 既存データと結合して更新
-                updated_df = pd.concat([df, new_entry], ignore_index=True) if 'df' in locals() and not df.empty else new_entry
+                # 1. 既存データと結合
+                if 'df' in locals() and not df.empty:
+                    updated_df = pd.concat([df, new_entry], ignore_index=True)
+                else:
+                    updated_df = new_entry
+                
+                # --- ★ここに追加！「規律」を守るソート処理 ---
+                updated_df['日付'] = pd.to_datetime(updated_df['日付'])
+                updated_df = updated_df.sort_values(by='日付').reset_index(drop=True)
+                # ------------------------------------------
+                
+                # 2. 書き込み実行
                 conn.update(spreadsheet=SPREADSHEET_URL, data=updated_df)
+                
                 st.balloons()
                 st.session_state.analyzed = False
-                st.success("スプレッドシートを更新しました！")
+                st.success("スプレッドシートを日付順に整理して保存しました！")
                 st.rerun()
             except Exception as e:
                 st.error(f"保存失敗: {e}")
