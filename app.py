@@ -34,7 +34,7 @@ if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
 # ==========================================================
-# AI解析関数（数値抽出）
+# AI解析関数
 # ==========================================================
 def perform_ai_analysis(uploaded_files):
     prompt = """
@@ -54,13 +54,13 @@ def perform_ai_analysis(uploaded_files):
         return None
 
 # ==========================================================
-# 処理1: 最新データの読み込みと「5つの指標」の表示
+# 処理1: 最新データの読み込みと表示
 # ==========================================================
 try:
     df = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
     
     if not df.empty:
-        # 日付処理とソート（規律の維持）
+        # 日付処理とソート
         df['日付'] = pd.to_datetime(df['日付'])
         df = df.sort_values(by='日付').reset_index(drop=True)
         
@@ -71,7 +71,7 @@ try:
         # ① 前日（前回）比
         daily_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
         
-        # ② 今月の収支（カレンダー月リセット）
+        # ② 今月の収支
         this_month_df = df[(df['日付'].dt.year == latest_date.year) & (df['日付'].dt.month == latest_date.month)]
         this_month_diff = total - this_month_df.iloc[0]['総資産'] if not this_month_df.empty else 0
             
@@ -87,67 +87,23 @@ try:
             last_month_diff = 0
             last_month_label = "前月のデータなし"
 
-        # --- ダッシュボード表示（ご要望の順番：前日→前月→今月） ---
+        # --- ダッシュボード表示（前日→前月→今月） ---
         st.subheader("📊 資産状況ダッシュボード")
         cols = st.columns(5)
         
-        # 基本情報
         cols[0].metric("現在の総資産", f"¥{int(total):,}")
         cols[1].metric("1億円まであと", f"¥{int(GOAL_AMOUNT - total):,}")
-        
-        # 収支フロー（前日比 → 前月収支 → 今月収支）
         cols[2].metric("前日比(前回比)", f"¥{int(daily_diff):,}", delta=f"{int(daily_diff):+,}")
         cols[3].metric(last_month_label, f"¥{int(last_month_diff):,}", delta=f"{int(last_month_diff):+,}")
         cols[4].metric(f"{latest_date.month}月の収支", f"¥{int(this_month_diff):,}", delta=f"{int(this_month_diff):+,}")
             
         st.progress(min(float(total / GOAL_AMOUNT), 1.0), text=f"進捗率: {total/GOAL_AMOUNT:.2%}")
-        
         df['日付'] = df['日付'].dt.strftime('%Y/%m/%d')
     else:
         st.info("データがまだありません。")
-except Exception as e:
+except Exception:
     st.info("データの読み込み中...")
 
 # ==========================================================
 # 処理2: 資産更新（AI解析 & 保存）
-# ==========================================================
-st.divider()
-st.subheader("📸 資産状況を更新（AI自動解析）")
-uploaded_files = st.file_uploader("スクショをアップロード", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
-
-if st.button("AI解析を実行"):
-    if uploaded_files:
-        with st.spinner('Geminiがデータを抽出中...'):
-            res = perform_ai_analysis(uploaded_files)
-            if res:
-                st.session_state.ocr_data = res
-                st.session_state.analyzed = True
-                st.success("解析完了！内容を確認してください。")
-            else:
-                st.error("解析に失敗しました。")
-                st.session_state.analyzed = True
-    else:
-        st.warning("ファイルを選択してください")
-
-if st.session_state.analyzed:
-    with st.form("confirm_form"):
-        cash = st.number_input("現物買付余力", value=int(st.session_state.ocr_data.get('cash', 0)))
-        spot = st.number_input("現物時価総額", value=int(st.session_state.ocr_data.get('spot', 0)))
-        margin = st.number_input("信用評価損益", value=int(st.session_state.ocr_data.get('margin', 0)))
-        
-        if st.form_submit_button("この内容で記録する"):
-            with st.spinner('保存中...'):
-                today_str = datetime.now().strftime('%Y/%m/%d')
-                new_total = cash + spot + margin
-                
-                new_entry = pd.DataFrame([{
-                    "日付": today_str,
-                    "現物買付余力": cash,
-                    "現物時価総額": spot,
-                    "信用評価損益": margin,
-                    "総資産": new_total,
-                    "1億円までの残り": GOAL_AMOUNT - new_total
-                }])
-                
-                try:
-                    if 'df' in locals() and not df.empty:
+# =================
