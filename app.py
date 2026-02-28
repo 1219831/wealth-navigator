@@ -11,7 +11,7 @@ import re
 GOAL_AMOUNT = 100000000  # 1億円
 SPREADSHEET_URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwWt0aWJEa_Is/edit"
 
-# ワイドレイアウトで5つの指標を見やすく配置
+# ワイドレイアウト設定
 st.set_page_config(page_title="Wealth Navigator", page_icon="🚀", layout="wide")
 
 # --- 準備1: Gemini APIの設定 ---
@@ -19,7 +19,7 @@ try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception:
-    st.error("Secretsに 'GEMINI_API_KEY' が設定されていません。")
+    st.error("Secretsに 'GEMINI_API_KEY' が正しく設定されていません。")
     st.stop()
 
 st.title("🚀 Wealth Navigator")
@@ -34,7 +34,7 @@ if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
 # ==========================================================
-# AI解析関数（数値のみ抽出）
+# AI解析関数（数値抽出）
 # ==========================================================
 def perform_ai_analysis(uploaded_files):
     prompt = """
@@ -71,44 +71,42 @@ try:
         # ① 前日（前回）比
         daily_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
         
-        # ② 今月の収支（カレンダー月でリセット）
+        # ② 今月の収支（カレンダー月リセット）
         this_month_df = df[(df['日付'].dt.year == latest_date.year) & (df['日付'].dt.month == latest_date.month)]
-        if not this_month_df.empty:
-            this_month_diff = total - this_month_df.iloc[0]['総資産']
-        else:
-            this_month_diff = 0
+        this_month_diff = total - this_month_df.iloc[0]['総資産'] if not this_month_df.empty else 0
             
         # ③ 先月の収支
-        # 先月の年月を計算
         first_day_of_this_month = latest_date.replace(day=1)
         last_day_of_last_month = first_day_of_this_month - pd.Timedelta(days=1)
         last_month_df = df[(df['日付'].dt.year == last_day_of_last_month.year) & (df['日付'].dt.month == last_day_of_last_month.month)]
         
         if not last_month_df.empty:
-            # 先月の最終日の資産 - 先月の最初の日の資産
             last_month_diff = last_month_df.iloc[-1]['総資産'] - last_month_df.iloc[0]['総資産']
             last_month_label = f"{last_day_of_last_month.month}月の収支"
         else:
             last_month_diff = 0
-            last_month_label = "先月のデータなし"
+            last_month_label = "前月のデータなし"
 
-        # --- ダッシュボード表示（5列構成） ---
+        # --- ダッシュボード表示（ご要望の順番：前日→前月→今月） ---
         st.subheader("📊 資産状況ダッシュボード")
         cols = st.columns(5)
         
+        # 基本情報
         cols[0].metric("現在の総資産", f"¥{int(total):,}")
         cols[1].metric("1億円まであと", f"¥{int(GOAL_AMOUNT - total):,}")
-        cols[2].metric(f"{latest_date.month}月の収支", f"¥{int(this_month_diff):,}", delta=f"{int(this_month_diff):+,}")
-        cols[3].metric("前日比(前回比)", f"¥{int(daily_diff):,}", delta=f"{int(daily_diff):+,}")
-        cols[4].metric(last_month_label, f"¥{int(last_month_diff):,}", delta=f"{int(last_month_diff):+,}")
+        
+        # 収支フロー（前日比 → 前月収支 → 今月収支）
+        cols[2].metric("前日比(前回比)", f"¥{int(daily_diff):,}", delta=f"{int(daily_diff):+,}")
+        cols[3].metric(last_month_label, f"¥{int(last_month_diff):,}", delta=f"{int(last_month_diff):+,}")
+        cols[4].metric(f"{latest_date.month}月の収支", f"¥{int(this_month_diff):,}", delta=f"{int(this_month_diff):+,}")
             
         st.progress(min(float(total / GOAL_AMOUNT), 1.0), text=f"進捗率: {total/GOAL_AMOUNT:.2%}")
         
         df['日付'] = df['日付'].dt.strftime('%Y/%m/%d')
     else:
-        st.info("データがまだありません。最初のデータを記録してください。")
+        st.info("データがまだありません。")
 except Exception as e:
-    st.info(f"読み込み中: {e}")
+    st.info("データの読み込み中...")
 
 # ==========================================================
 # 処理2: 資産更新（AI解析 & 保存）
@@ -124,9 +122,9 @@ if st.button("AI解析を実行"):
             if res:
                 st.session_state.ocr_data = res
                 st.session_state.analyzed = True
-                st.success("解析完了！")
+                st.success("解析完了！内容を確認してください。")
             else:
-                st.error("解析に失敗しました。手動で入力してください。")
+                st.error("解析に失敗しました。")
                 st.session_state.analyzed = True
     else:
         st.warning("ファイルを選択してください")
@@ -153,20 +151,3 @@ if st.session_state.analyzed:
                 
                 try:
                     if 'df' in locals() and not df.empty:
-                        updated_df = pd.concat([df, new_entry], ignore_index=True)
-                    else:
-                        updated_df = new_entry
-                    
-                    # 規律：日付順にソートして保存
-                    updated_df['日付'] = pd.to_datetime(updated_df['日付'])
-                    updated_df = updated_df.sort_values(by='日付').reset_index(drop=True)
-                    updated_df['日付'] = updated_df['日付'].dt.strftime('%Y/%m/%d')
-                    
-                    conn.update(spreadsheet=SPREADSHEET_URL, data=updated_df)
-                    
-                    st.balloons()
-                    st.session_state.analyzed = False
-                    st.success(f"記録完了: {today_str}")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"保存失敗: {e}")
