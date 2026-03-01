@@ -34,6 +34,7 @@ def perform_ai_analysis(uploaded_files):
     prompt = """松井証券の資産状況から数値（現物買付余力、現物時価総額、信用評価損益）を抽出し、{"cash": 100, "spot": 200, "margin": -50} の形式で出力してください。"""
     try:
         img = Image.open(uploaded_files[0])
+        # get_image_info は不要なので削除
         response = model.generate_content([prompt, img])
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL).group()
         return json.loads(json_str)
@@ -62,9 +63,10 @@ try:
         this_month_df = df[(df['日付'].dt.year == latest_date.year) & (df['日付'].dt.month == latest_date.month)]
         this_month_diff = total - this_month_df.iloc[0]['総資産'] if not this_month_df.empty else 0
         
-        last_month_date = latest_date.replace(day=1) - timedelta(days=1)
-        last_month_data = df[df['日付'].dt.to_period('M') == last_month_date.to_period('M')]
-        last_month_diff = last_month_data.iloc[-1]['総資産'] - last_month_data.iloc[0]['総資産'] if not last_month_data.empty else 0
+        # 先月のデータ抽出（ここを修正しました）
+        last_month_end = latest_date.replace(day=1) - timedelta(days=1)
+        last_month_df = df[df['日付'].dt.to_period('M') == last_month_end.to_period('M')]
+        last_month_diff = last_month_df.iloc[-1]['総資産'] - last_month_df.iloc[0]['総資産'] if not last_month_df.empty else 0
 
         # --- 5. ダッシュボード表示 ---
         st.title("🚀 Wealth Navigator PRO")
@@ -83,11 +85,11 @@ try:
         # 1: 目標までの残り
         m_cols[1].metric("1億円まであと", f"¥{int(GOAL_AMOUNT - total):,}")
         
-        # 2: 前日比（エラー箇所を修正済み）
+        # 2: 前日比
         m_cols[2].metric("前日(前回)比", f"¥{int(daily_diff):,}", delta=f"{int(daily_diff):+,}")
         
         # 3: 前月収支
-        l_month_label = f"{last_month_date.month}月の収支" if not last_month_df.empty else "前月のデータなし"
+        l_month_label = f"{last_month_end.month}月の収支" if not last_month_df.empty else "前月のデータなし"
         m_cols[3].metric(l_month_label, f"¥{int(last_month_diff):,}", delta=f"{int(last_month_diff):+,}")
         
         # 4: 今月収支
@@ -160,27 +162,4 @@ if st.button("AI解析を実行"):
 if st.session_state.analyzed:
     with st.form("update_form"):
         c1, c2, c3 = st.columns(3)
-        cash = c1.number_input("現物取得余力", value=int(st.session_state.ocr_data.get('cash', 0)))
-        spot = c2.number_input("現物資産時価総額", value=int(st.session_state.ocr_data.get('spot', 0)))
-        margin = c3.number_input("信用保有資産損益", value=int(st.session_state.ocr_data.get('margin', 0)))
-        
-        if st.form_submit_button("記録する"):
-            today_str = datetime.now().strftime('%Y/%m/%d')
-            new_total = cash + spot + margin
-            new_entry = pd.DataFrame([{
-                "日付": today_str, "現物買付余力": cash, "現物時価総額": spot,
-                "信用評価損益": margin, "総資産": new_total, "1億円までの残り": GOAL_AMOUNT - new_total
-            }])
-            
-            try:
-                combined_df = pd.concat([df_raw, new_entry], ignore_index=True) if 'df_raw' in locals() else new_entry
-                combined_df['日付'] = pd.to_datetime(combined_df['日付'])
-                combined_df = combined_df.sort_values('日付').drop_duplicates(subset='日付', keep='last')
-                combined_df['日付'] = combined_df['日付'].dt.strftime('%Y/%m/%d')
-                
-                conn.update(spreadsheet=SPREADSHEET_URL, data=combined_df)
-                st.balloons()
-                st.session_state.analyzed = False
-                st.rerun()
-            except Exception as e:
-                st.error(f"保存失敗: {e}")
+        cash = c1.number_input("現物取得余力", value=int(st
