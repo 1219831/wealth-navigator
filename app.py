@@ -14,7 +14,7 @@ URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwW
 
 st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携 ---
+# --- 2. 外部連携 (404対策) ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('models/gemini-1.5-flash')
@@ -39,9 +39,9 @@ def perform_ai_analysis(up_file):
         return json.loads(j_str)
     except: return None
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=86400)
 def get_market_briefing(d_str):
-    p = f"今日は{d_str}。国内決算、重要経済指標、🚨重要イベントを簡潔にまとめて。投資助言は不要。"
+    p = f"今日は{d_str}。国内決算(銘柄と数)、重要経済指標(日米欧中)、🚨重要イベントを簡潔にまとめて。投資助言は不要。"
     try:
         res = model.generate_content(p)
         return res.text if res.text else "取得制限中"
@@ -73,6 +73,7 @@ if not df_raw.empty:
     lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
+    # ダッシュボード表示
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     with cols[0]:
@@ -87,42 +88,4 @@ if not df_raw.empty:
     cols[4].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     
     prg = max(0.0, min(float(total / GOAL), 1.0))
-    st.progress(prg, text=f"目標達成率: {prg:.2%}")
-
-    # --- AIマーケットダイジェスト ---
-    st.divider()
-    st.markdown(get_market_briefing(datetime.now().strftime('%Y年%m月%d日')))
-
-    # --- 資産成長トレンドグラフ ---
-    st.divider()
-    vc, uc = st.columns([3, 1])
-    with vc: st.write("### 🏔️ 資産成長トレンド")
-    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
-
-    if v_mode == "日":
-        p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
-        if len(p_df) < 2: p_df = df.copy()
-        xf, dtk = "%m/%d", None
-    elif v_mode == "週":
-        p_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
-        if len(p_df) < 2: p_df = df.copy()
-        xf, dtk = "%m/%d", None
-    else:
-        df_m = df.copy()
-        df_m['m'] = df_m['日付'].dt.to_period('M')
-        p_df = df_m.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
-        if len(p_df) < 2: p_df = df.copy()
-        xf, dtk = "%y/%m", "M1"
-
-    y_m = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
-        line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
-        mode='lines+markers' if v_mode == "日" else 'lines'
-    ))
-    fig.update_layout(
-        template="plotly_dark", height=400, margin=dict(l=50, r=20, t=20, b=50),
-        xaxis=dict(tickformat=xf, dtick=dtk, type='date'),
-        yaxis=dict(range=[0, y_m], tickformat=",d"),
-        hovermode
+    st.progress(prg, text=f"目標達成率: {prg:.
