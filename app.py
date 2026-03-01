@@ -29,7 +29,7 @@ if 'analyzed' not in st.session_state:
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI機能 ---
+# --- 3. AI解析機能 ---
 def perform_ai_analysis(up_file):
     p = '松井証券の数値抽出。{"cash": 100, "spot": 200, "margin": -50} の形式。'
     try:
@@ -40,20 +40,23 @@ def perform_ai_analysis(up_file):
     except Exception:
         return None
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=3600) # 1時間キャッシュ
 def get_investment_briefing(date_key):
+    # AIが「助言」と誤解しないよう、客観的なスケジュール作成を依頼
     prompt = f"""
-    今日は {date_key} です。マーケットの予定を簡潔にまとめてください。
-    1. 国内決算：直近の注目銘柄（3〜5社）
-    2. 重要経済指標：日米欧中の注目指標（PMI、雇用等）
-    3. 🚨重要：相場に影響する最重要イベントを太字で。
-    ※客観的なカレンダー情報として出力してください。
+    本日は {date_key} です。一般的な経済カレンダーを日本語で作成してください。
+    1. 国内決算：本日または近日中に予定されている主要企業（数社）と件数。
+    2. 重要指標：日・米・欧・中で注目される直近の指標（雇用、物価、製造業指数など）。
+    3. 🚨注目点：市場が注目する大きな政治・経済イベント。
+    ※投資判断は含まず、公知の予定表として簡潔にまとめてください。
     """
     try:
         response = model.generate_content(prompt)
-        return response.text if response.text else "情報の取得を制限しています。"
-    except:
-        return "💡 マーケット情報は準備中です。 (API Wait...)"
+        if response and response.text:
+            return response.text
+        return "🚨 マーケット情報：現在、情報の取得を制限しています。"
+    except Exception as e:
+        return f"💡 マーケット情報は準備中です。 (Status: {str(e)[:20]})"
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
@@ -80,14 +83,9 @@ if not df_raw.empty:
     
     lm_target = ld.replace(day=1) - timedelta(days=1)
     lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
-    
-    # エラー箇所を安全に修正
-    if not lm_df.empty:
-        lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産']
-    else:
-        lm_diff = 0
+    lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
-    # ダッシュボード
+    # 1. ダッシュボード
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     
@@ -105,13 +103,14 @@ if not df_raw.empty:
     prg = max(0.0, min(float(total / GOAL), 1.0))
     st.progress(prg, text=f"目標達成率: {prg:.2%}")
 
-    # AIダイジェスト
-    st.divider()
-    t_key = datetime.now().strftime('%Y-%m-%d')
-    briefing = get_investment_briefing(t_key)
-    st.markdown(briefing)
+    # 2. AIダイジェスト（目標達成率の下に配置）
+    st.markdown("---")
+    t_key = datetime.now().strftime('%Y年%m月%d日')
+    with st.expander("🗓️ 本日の投資イベント・ダイジェスト", expanded=True):
+        briefing = get_investment_briefing(t_key)
+        st.markdown(briefing)
 
-    # グラフセクション
+    # 3. グラフ
     st.divider()
     vc, uc = st.columns([3, 1])
     with vc: st.write("### 🏔️ 資産成長トレンド")
@@ -152,7 +151,7 @@ if not df_raw.empty:
 else:
     st.info("データがありません。")
 
-# --- 7. 更新フォーム ---
+# --- 6. 更新フォーム ---
 st.divider()
 st.subheader("📸 資産状況を更新")
 up_file = st.file_uploader("スクショを選択", type=['png', 'jpg', 'jpeg'])
@@ -173,24 +172,4 @@ if st.session_state.analyzed:
         v_s = int(st.session_state.ocr_data.get('spot', 0))
         v_m = int(st.session_state.ocr_data.get('margin', 0))
         n_c = c1.number_input("現物取得余力", value=v_c)
-        n_s = c2.number_input("現物資産時価総額", value=v_s)
-        n_m = c3.number_input("信用保有資産損益", value=v_m)
-        if st.form_submit_button("記録する"):
-            td = datetime.now().strftime('%Y/%m/%d')
-            tv = n_c + n_s + n_m
-            ent = pd.DataFrame([{
-                "日付": td, "現物買付余力": n_c, "現物時価総額": n_s,
-                "信用評価損益": n_m, "総資産": tv,
-                "1億円までの残り": GOAL - tv
-            }])
-            try:
-                out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
-                out['日付'] = pd.to_datetime(out['日付'])
-                out = out.sort_values('日付').drop_duplicates('日付', keep='last')
-                out['日付'] = out['日付'].dt.strftime('%Y/%m/%d')
-                conn.update(spreadsheet=URL, data=out)
-                st.balloons()
-                st.session_state.analyzed = False
-                st.rerun()
-            except Exception as e:
-                st.error(f"保存失敗: {e}")
+        n_s = c2.
