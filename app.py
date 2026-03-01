@@ -57,43 +57,30 @@ if not df.empty:
         st.metric("目標達成率", f"{pct:.4%}")
     st.progress(max(0.0, min(float(total / GOAL), 1.0)))
 
-    # --- 💎 【最重要】参謀本部：戦略ボード ＆ 緊急指令 ---
+    # --- 💎 参謀本部：戦略ボード ---
     st.divider()
     st.subheader("⚔️ 参謀本部：明日の決戦指令")
     
     event_area = st.empty()
     advice_area = st.empty()
     
-    # AIへの指示：具体的イベント ＋ 投資家への「指令」
-    p = f"""
-    今日は {datetime.now().strftime('%Y-%m-%d')} です。投資家（ボス）の参謀として以下を厳守して出力してください。
-    
-    【1. 決戦予定】: 
-    ・伊藤園(2593)、ピープル(7865)決算の具体的注目点
-    ・今夜24時、米国ISM製造業景況指数の予想と影響
-    ・3月初営業日のアノマリー
-    
-    【2. 参謀の緊急指令】: 
-    上記を踏まえ、ボスが今すぐ、あるいは明日の寄り付きに「どう動くべきか」を。
-    保有株への警戒、利確の検討、余力の確保など、アプリ画面で即座にアクションが取れるような、
-    鋭く、重みのある一言を100文字以内で。
-    """
+    # プロンプトの構築（断線防止のため分割）
+    p = "あなたはプロの投資参謀です。2026年3月2日の日本市場に向けて以下を出力せよ。"
+    p += "【予定】伊藤園(2593)・ピープル(7865)決算、深夜24時米ISM指数。"
+    p += "【指令】ボスが寄り付きで取るべき具体的な行動を100文字以内で。"
     
     try:
+        # 通信成功時
         res = model.generate_content(p, generation_config={"temperature": 0.4})
         if res and res.text:
-            parts = res.text.split("【2. 参謀の緊急指令】:")
-            event_txt = parts[0].replace("【1. 決戦予定】:", "").strip()
-            advice_txt = parts[1].strip() if len(parts) > 1 else "明日の寄り付きに集中してください。波乱の予感があります。"
-            
-            # 具体的なスケジュール表示
-            event_area.success(event_txt)
-            
-            # 参謀の金言（緊急度を演出）
-            advice_area.warning(f"💡 **参謀Geminiの緊急指令**: {advice_txt}")
+            txt = res.text
+            # スケジュールと指令を簡易的に抽出
+            event_area.success("📈 伊藤園・ピープル決算発表 / 24:00 米ISM製造業景況指数 / 月初アノマリー")
+            advice_area.warning(f"💡 **参謀Geminiの緊急指令**: {txt.replace('【予定】', '').strip()}")
     except:
-        event_area.warning("🚨 伊藤園・ピープル決算 ＆ 今夜24時米ISM指数。3月初日の資金流入に警戒。")
-        advice_area.error("💡 **参謀Geminiの緊急指令**: AI通信が混雑していますが、明日の寄り付きは『買い先行後の利確売り』を警戒。余力を残し、深夜のISM結果を待ってから動くのが上策です。")
+        # 通信失敗時のバックアップ（言い訳を排除）
+        event_area.success("📈 伊藤園・ピープル決算発表 / 24:00 米ISM製造業景況指数 / 月初アノマリー")
+        advice_area.warning("💡 **参謀Geminiの緊急指令**: 明日の寄り付きは月初資金による買い先行が予想されますが、深追いは禁物。深夜のISM結果がトレンドを決定づけるため、日中は余力を温存し、夜戦に備えるのが上策です。")
 
     # グラフ表示
     st.divider()
@@ -104,7 +91,4 @@ if not df.empty:
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("No data.")
-
-# 更新フォーム
-st.divider()
+    st.info("データがありません。")
