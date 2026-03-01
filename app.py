@@ -29,9 +29,9 @@ if 'analyzed' not in st.session_state:
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI分析 ---
+# --- 3. AI分析エンジン ---
 def perform_ai_analysis(up_file):
-    p = '抽出：{"cash": 数値, "spot": 数値, "margin": 数値}'
+    p = '抽出項目：{"cash": 数値, "spot": 数値, "margin": 数値}'
     try:
         img = Image.open(up_file)
         res = model.generate_content([p, img])
@@ -41,10 +41,10 @@ def perform_ai_analysis(up_file):
 
 @st.cache_data(ttl=3600)
 def get_market_briefing(d_str):
-    p = f"今日は{d_str}。週末の米株日本株振り返り、明日からの国内決算、重要指標、🚨重要イベントを日本語で簡潔にまとめて。"
+    p = f"今日は{d_str}。先週末の米株日本株振り返り、明日からの国内決算、重要指標、🚨重要イベントを日本語で簡潔にまとめて。投資助言は不要。"
     try:
         res = model.generate_content(p)
-        return res.text if res.text else "取得制限中"
+        return res.text if res.text else "情報の取得を制限中"
     except: return "整理中..."
 
 # --- 4. データ読み込み ---
@@ -52,7 +52,7 @@ df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("接続待ち...")
+    st.warning("スプレッドシート接続待ち...")
 
 # --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
@@ -65,19 +65,41 @@ if not df_raw.empty:
     latest = df.iloc[-1]
     ld, total = latest['日付'], latest['総資産']
     
-    # 指標計算
+    # 収支計算（断線対策：事前に文字列化）
     d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
     tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
     tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
+    
+    # 表示用のラベルと値を変数化
+    m_val = f"¥{int(total):,}"
+    d_label = f"{ld.month}月収支"
+    d_val = f"¥{int(tm_diff):,}"
+    d_delta = f"{int(tm_diff):+,}"
 
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     with cols[0]:
-        st.metric("現在の総資産", f"¥{int(total):,}")
+        st.metric("現在の総資産", m_val)
         st.caption(f"┣ 現物資産時価総額: ¥{int(latest['現物時価総額']):,}")
         st.caption(f"┣ 信用保有資産損益: ¥{int(latest['信用評価損益']):+,}")
         st.caption(f"┗ 現物取得余力: ¥{int(latest['現物買付余力']):,}")
     
     cols[1].metric("1億円まで", f"¥{int(GOAL - total):,}")
     cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
-    cols[3].metric(f"{ld.month}月収支", f
+    cols[3].metric(d_label, d_val, delta=d_delta) # 短文化で断線防止
+    cols[4].metric("目標達成率", f"{total/GOAL:.2%}")
+    
+    # 進捗バー
+    prg_v = max(0.0, min(float(total / GOAL), 1.0))
+    st.progress(prg_v)
+
+    # AIマーケット情報
+    st.divider()
+    st.subheader("🗓️ 週末マーケット・ダイジェスト")
+    today_key = datetime.now().strftime('%Y-%m-%d')
+    st.markdown(get_market_briefing(today_key))
+
+    # グラフセクション
+    st.divider()
+    vc, uc = st.columns([3, 1])
+    with vc: st.write("
