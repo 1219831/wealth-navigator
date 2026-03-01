@@ -24,13 +24,12 @@ except Exception:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# セッション状態管理
 if 'analyzed' not in st.session_state:
     st.session_state.analyzed = False
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# AI解析（OCR）関数
+# --- 3. AI機能（OCR & 投資ダイジェスト） ---
 def perform_ai_analysis(up_file):
     p = '松井証券の数値抽出。{"cash": 100, "spot": 200, "margin": -50} の形式。'
     try:
@@ -40,6 +39,31 @@ def perform_ai_analysis(up_file):
         return json.loads(j_str)
     except Exception:
         return None
+
+@st.cache_data(ttl=3600) # 1時間キャッシュ
+def get_investment_briefing(current_date):
+    prompt = f"""
+    今日は {current_date} です。プロの投資参謀として本日のマーケット情報を日本語で要約してください。
+    
+    1. 国内決算発表：本日の発表件数と、特に注目すべき3〜5社の社名をピックアップ。
+    2. 重要経済指標：日・米・欧・中の順で、本日または週明けの最重要指数（PMI、金利、雇用統計等）を網羅。
+    3. 特記事項：相場の転換点になりそうな超重要イベントは「🚨」を付け、太字で強調。
+    
+    フォーマット：
+    ### 🗓️ 本日の投資カレンダー
+    - **国内決算 (本日xx件):** 社名A, 社名B...
+    - **主要指標:**
+      - 🇯🇵 日本: 内容
+      - 🇺🇸 米国: 内容
+      - 🇪🇺 欧州: 内容
+      - 🇨🇳 中国: 内容
+    - **注目トピック:** 🚨 **超重要イベントの内容**
+    """
+    try:
+        res = model.generate_content(prompt)
+        return res.text
+    except:
+        return "マーケット情報の取得に失敗しました。"
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
@@ -52,7 +76,6 @@ except Exception:
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
-    # データクリーニング
     df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
     
@@ -69,7 +92,7 @@ if not df_raw.empty:
     lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
-    # 1. ダッシュボード表示
+    # ダッシュボード
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     
@@ -87,47 +110,42 @@ if not df_raw.empty:
     prg = max(0.0, min(float(total / GOAL), 1.0))
     st.progress(prg, text=f"目標達成率: {prg:.2%}")
 
-    # 2. グラフセクション
+    # --- 💎 追加：本日のイベント（AIダイジェスト） ---
+    with st.container():
+        briefing = get_investment_briefing(datetime.now().strftime('%Y年%m月%d日'))
+        st.markdown(briefing)
+
+    # --- 📈 グラフセクション ---
     st.divider()
     vc, uc = st.columns([3, 1])
-    with vc:
-        st.write("### 🏔️ 資産成長トレンド")
-    with uc:
-        v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
+    with vc: st.write("### 🏔️ 資産成長トレンド")
+    with uc: v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
 
-    # フィルタリングロジック
     if v_mode == "日":
         p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
-        if len(p_df) < 2: p_df = df.copy() # データ不足時は全件
+        if len(p_df) < 2: p_df = df.copy()
         x_fmt, dtk = "%m/%d", None
     elif v_mode == "週":
         p_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
         if len(p_df) < 2: p_df = df.copy()
         x_fmt, dtk = "%m/%d", None
     else:
-        # 月別
         df_m = df.copy()
         df_m['m'] = df_m['日付'].dt.to_period('M')
         p_df = df_m.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
         if len(p_df) < 2: p_df = df.copy()
         x_fmt, dtk = "%y/%m", "M1"
 
-    # グラフ描画
     ymax = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
-        line=dict(color='#007BFF', width=4), 
-        fillcolor='rgba(0, 123, 255, 0.15)',
+        line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
         mode='lines+markers' if v_mode == "日" else 'lines',
         hovertemplate='<b>%{x|%Y/%m/%d}</b><br>資産: ¥%{y:,.0f}<extra></extra>'
     ))
-    
-    # レイアウト設定（エラー再発防止のためシンプルに記述）
     fig.update_layout(
-        template="plotly_dark",
-        height=450,
-        margin=dict(l=50, r=20, t=20, b=50),
+        template="plotly_dark", height=450, margin=dict(l=50, r=20, t=20, b=50),
         xaxis=dict(tickformat=x_fmt, dtick=dtk, showgrid=False, type='date'),
         yaxis=dict(range=[0, ymax], showgrid=True, gridcolor="#333", tickformat=",d"),
         hovermode="x unified"
@@ -137,14 +155,14 @@ if not df_raw.empty:
 else:
     st.info("データがありません。スクショをアップしてください。")
 
-# --- 6. 更新フォーム ---
+# --- 7. 更新フォーム ---
 st.divider()
 st.subheader("📸 資産状況を更新")
 up_file = st.file_uploader("スクショを選択", type=['png', 'jpg', 'jpeg'])
 
 if st.button("AI解析を実行"):
     if up_file:
-        with st.spinner('解析中...'):
+        with st.spinner('Geminiが解析中...'):
             res = perform_ai_analysis(up_file)
             if res:
                 st.session_state.ocr_data = res
