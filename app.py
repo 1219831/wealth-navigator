@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import google.generativeai as genai
 from PIL import Image
 import plotly.graph_objects as go
@@ -23,7 +23,7 @@ except:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. データ取得と収支計算 ---
+# --- 3. データ取得 ---
 df = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
@@ -37,38 +37,36 @@ except:
 st.title("🚀 Wealth Navigator PRO")
 
 if not df.empty:
-    L = df.iloc[-1]  # 最新
+    L = df.iloc[-1]
     T = L['総資産']
+    M = L['信用評価損益']
     
-    # --- 📊 収支状況の算出 (本日・今月・先月) ---
-    # 本日収支 (前日比)
-    day_diff = T - df.iloc[-2]['総資産'] if len(df) > 1 else 0
-    # 今月収支 (月初比)
-    this_month_start = df[df['日付'] >= datetime.now().replace(day=1)].iloc[0]['総資産']
-    month_diff = T - this_month_start
-    # 先月収支
-    last_month_end = df[df['日付'] < datetime.now().replace(day=1)]
-    prev_month_diff = last_month_end.iloc[-1]['総資産'] - last_month_end.iloc[0]['総資産'] if not last_month_end.empty else 0
+    # 収支計算 (安全策)
+    d_gain, m_gain, p_gain = 0, 0, 0
+    try:
+        if len(df) > 1: d_gain = T - df.iloc[-2]['総資産']
+        this_m = df[df['日付'] >= datetime.now().replace(day=1)]
+        if not this_m.empty: m_gain = T - this_m.iloc[0]['総資産']
+        last_m = df[df['日付'] < datetime.now().replace(day=1)]
+        if not last_m.empty: p_gain = last_m.iloc[-1]['総資産'] - last_m.iloc[0]['総資産']
+    except:
+        pass
 
     # A. 資産ダッシュボード
     st.subheader("📊 資産状況 & 収支")
     c1, c2, c3 = st.columns([1.2, 1, 1])
     with c1:
-        st.metric("現在の総資産", f"¥{int(T):,}", f"{int(day_diff):+,}")
-        st.caption(f"┣ 現物: ¥{int(L['現物時価総額']):,}")
-        st.caption(f"┣ 信用損益: ¥{int(L['信用評価損益']):+,}")
-        st.caption(f"┗ 余力: ¥{int(L['現物買付余力']):,}")
+        st.metric("総資産", f"¥{int(T):,}", f"{int(d_gain):+d}")
+        st.caption("┣ 現物: ¥" + f"{int(L['現物時価総額']):,}")
+        st.caption("┣ 信用: ¥" + f"{int(M):+,}")
+        st.caption("┗ 余力: ¥" + f"{int(L['現物買付余力']):,}")
     with c2:
-        st.metric("今月の収支", f"¥{int(month_diff):+,}")
-        st.metric("先月の収支", f"¥{int(prev_month_diff):+,}")
+        st.metric("今月収支", f"¥{int(m_gain):+,}")
+        st.metric("先月収支", f"¥{int(p_gain):+,}")
     with c3:
-        st.metric("1億円まで", f"¥{int(GOAL - T):,}")
-        st.metric("目標達成率", f"{T/GOAL:.4%}")
+        st.metric("目標まで", f"¥{int(GOAL - T):,}")
+        st.metric("達成率", f"{T/GOAL:.4%}")
     st.progress(max(0.0, min(float(T / GOAL), 1.0)))
 
-    # --- 💎 参謀本部：銘柄・イベント直撃ボード ---
+    # --- 💎 参謀本部 (銘柄・イベント) ---
     st.divider()
-    st.subheader("⚔️ 参謀本部：明日の決戦指令")
-    
-    # ボスの今の状況をAIに伝える
-    status_msg = f"総資産{T}円、信用損益{
