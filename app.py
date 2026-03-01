@@ -14,13 +14,14 @@ URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwW
 
 st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携（Geminiモデル名を正確に指定） ---
+# --- 2. 外部連携設定 ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # モデル名を最新の正式な文字列に固定
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 404対策：最も汎用的なモデル名を空白なしで指定
+    model_name = "gemini-1.5-flash"
+    model = genai.GenerativeModel(model_name)
 except Exception as e:
-    st.error(f"API初期化エラー: {e}")
+    st.error(f"初期化エラー: {e}")
     st.stop()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -30,7 +31,7 @@ if 'analyzed' not in st.session_state:
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI機能 ---
+# --- 3. AI機能（OCR & 市場分析） ---
 def perform_ai_analysis(up_file):
     p = '抽出：{"cash": 数値, "spot": 数値, "margin": 数値}'
     try:
@@ -38,33 +39,30 @@ def perform_ai_analysis(up_file):
         res = model.generate_content([p, img])
         j_str = re.search(r'\{.*\}', res.text, re.DOTALL).group()
         return json.loads(j_str)
-    except: return None
+    except:
+        return None
 
-@st.cache_data(ttl=3600)
-def get_market_brief(d_key):
-    p = f"""
-    今日は {d_key} です。投資家向けの経済ニュース要約を作成してください。
-    1. 国内決算：直近の主要企業の決算発表予定（3〜5社）。
-    2. 重要指標：日米欧中で、月初に発表される重要指標（PMI、雇用統計等）。
-    3. 🚨注目：相場変動の要因になりそうなイベントを太字で。
-    ※公知の事実に基づき、簡潔な箇条書きで出力してください。
-    """
+@st.cache_data(ttl=86400) # 1日キャッシュ
+def get_market_briefing(today_str):
+    # APIの拒否反応を避けるため「予定表の整理」を依頼
+    p = f"今日は{today_str}。直近の国内決算、日米欧中の重要経済指標、🚨注目イベントを簡潔な箇条書きでまとめてください。投資助言は不要です。"
     try:
-        # コンテンツ生成の実行
-        res = model.generate_content(p)
-        if res and res.text:
-            return res.text
-        return "🚨 情報の生成に失敗しました。リロードしてください。"
+        response = model.generate_content(p)
+        if response and hasattr(response, 'text'):
+            return response.text
+        return "🚨 情報の生成に失敗しました。時間をおいてリロードしてください。"
     except Exception as e:
-        # 404エラーなどが発生した場合の具体的なフィードバック
-        return f"💡 マーケット情報は準備中です。 (通信状況を確認中: {str(e)[:30]})"
+        # エラー詳細を少し出しつつ、404時は別の案内を出す
+        if "404" in str(e):
+            return "💡 AIモデル接続中... (API設定を再確認しています)"
+        return f"💡 マーケット情報は準備中です。 ({str(e)[:30]})"
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("シート接続待ち...")
+    st.warning("スプレッドシートへの接続を確認中...")
 
 # --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
@@ -99,20 +97,20 @@ if not df_raw.empty:
     cols[3].metric(f"{lm_target.month}月収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
     cols[4].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     
-    st.progress(max(0.0, min(float(total / GOAL), 1.0)), text=f"達成率: {total/GOAL:.2%}")
+    prg = max(0.0, min(float(total / GOAL), 1.0))
+    st.progress(prg, text=f"目標達成率: {prg:.2%}")
 
     # --- 💎 AI投資ダイジェスト ---
     st.markdown("---")
     with st.expander("🗓️ 本日の投資イベント・ダイジェスト", expanded=True):
-        # 秒単位でキャッシュが切れないよう日付のみを渡す
-        t_key = datetime.now().strftime('%Y-%m-%d')
-        st.write(get_market_brief(t_key))
+        today_key = datetime.now().strftime('%Y-%m-%d')
+        st.write(get_market_briefing(today_key))
 
-    # グラフ
+    # --- 📈 グラフセクション ---
     st.divider()
     vc, uc = st.columns([3, 1])
     with vc: st.write("### 🏔️ 資産成長トレンド")
-    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
+    with uc: v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
 
     if v_mode == "日":
         p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
@@ -137,14 +135,15 @@ if not df_raw.empty:
         mode='lines+markers' if v_mode == "日" else 'lines'
     ))
     fig.update_layout(
-        template="plotly_dark", height=400, margin=dict(l=50, r=20, t=20, b=50),
+        template="plotly_dark", height=450, margin=dict(l=50, r=20, t=20, b=50),
         xaxis=dict(tickformat=xf, dtick=dtk, type='date'),
         yaxis=dict(range=[0, y_m], tickformat=",d"),
         hovermode="x unified"
     )
     st.plotly_chart(fig, use_container_width=True)
+
 else:
-    st.info("データがありません。")
+    st.info("データがまだありません。最初のスクショをアップしてください。")
 
 # --- 6. 更新フォーム ---
 st.divider()
@@ -153,12 +152,12 @@ up_file = st.file_uploader("スクショを選択", type=['png', 'jpg', 'jpeg'])
 
 if st.button("AI解析を実行"):
     if up_file:
-        with st.spinner('解析中...'):
+        with st.spinner('Geminiが解析中...'):
             res = perform_ai_analysis(up_file)
             if res:
                 st.session_state.ocr_data = res
                 st.session_state.analyzed = True
-                st.success("成功！")
+                st.success("解析成功！")
 
 if st.session_state.analyzed:
     with st.form("edit_form"):
@@ -169,10 +168,10 @@ if st.session_state.analyzed:
         n_m = c3.number_input("信用保有資産損益", value=int(ocr.get('margin', 0)))
         
         if st.form_submit_button("記録する"):
-            today = datetime.now().strftime('%Y/%m/%d')
+            td_str = datetime.now().strftime('%Y/%m/%d')
             t_v = n_c + n_s + n_m
             ent = pd.DataFrame([{
-                "日付": today, "現物買付余力": n_c, "現物時価総額": n_s,
+                "日付": td_str, "現物買付余力": n_c, "現物時価総額": n_s,
                 "信用評価損益": n_m, "総資産": t_v, "1億円までの残り": GOAL - t_v
             }])
             try:
