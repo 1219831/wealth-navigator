@@ -6,7 +6,6 @@ import google.generativeai as genai
 from PIL import Image
 import json
 import re
-import plotly.express as px
 import plotly.graph_objects as go
 
 # --- 設定 ---
@@ -40,8 +39,7 @@ def perform_ai_analysis(uploaded_files):
         response = model.generate_content([prompt, img])
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL).group()
         return json.loads(json_str)
-    except Exception:
-        return None
+    except Exception: return None
 
 # ==========================================================
 # 処理1: データ読み込みとダッシュボード表示
@@ -50,7 +48,7 @@ try:
     df_raw = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
     
     if not df_raw.empty:
-        # 日付処理（時間をリセット）
+        # 日付処理
         df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
         df = df_raw.sort_values(by='日付').reset_index(drop=True)
         
@@ -82,58 +80,43 @@ try:
         
         st.progress(min(float(total / GOAL_AMOUNT), 1.0), text=f"進捗率: {total/GOAL_AMOUNT:.2%}")
 
-        # --- 📈 グラフエリア ---
+        # --- 📈 シンプル版グラフ（日付表示: 26/2） ---
         st.divider()
-        g_header_col1, g_header_col2 = st.columns([3, 1])
-        with g_header_col1:
-            st.write("### 🏔️ 資産成長トレンド")
-        with g_header_col2:
-            view_mode = st.radio("表示単位", ["日単位", "月単位"], horizontal=True, key="view_mode")
-
-        if view_mode == "月単位":
-            # 月ごとの最終日だけを抽出して重複を防止
-            plot_df = df.groupby(df['日付'].dt.to_period('M')).tail(1).copy()
-            x_tick_format = "%y/%m月"
-            x_dtick = "M1"
-        else:
-            plot_df = df
-            x_tick_format = "%y/%m/%d"
-            x_dtick = None
-
-        # 縦軸のゆとり計算（上下10%のバッファ）
-        y_min = plot_df['総資産'].min()
-        y_max = plot_df['総資産'].max()
-        y_buffer = (y_max - y_min) * 0.1 if y_max != y_min else total * 0.1
-        y_range = [y_min - y_buffer, y_max + y_buffer]
-
-        fig_area = go.Figure()
-        fig_area.add_trace(go.Scatter(
-            x=plot_df['日付'], 
-            y=plot_df['総資産'], 
+        st.write("### 🏔️ 資産成長トレンド")
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=df['日付'], 
+            y=df['総資産'], 
             fill='tozeroy', 
             name='総資産',
             line=dict(color='#007BFF', width=3),
-            fillcolor='rgba(0, 123, 255, 0.15)',
-            hovertemplate='%{x|%Y/%m/%d}<br>資産: ¥%{y:,.0f}<extra></extra>'
+            fillcolor='rgba(0, 123, 255, 0.2)'
         ))
         
-        fig_area.update_layout(
+        fig.update_layout(
             template="plotly_dark", 
-            height=450, 
+            height=400, 
             margin=dict(l=20, r=20, t=20, b=20),
-            xaxis=dict(tickformat=x_tick_format, dtick=x_dtick, showgrid=False, type='date'),
-            yaxis=dict(title="資産額 (円)", showgrid=True, gridcolor="#333", range=y_range)
+            xaxis=dict(
+                tickformat="%y/%-m", # ここで「26/2」の形式に指定
+                showgrid=False
+            ),
+            yaxis=dict(
+                showgrid=True, 
+                gridcolor="#333"
+            )
         )
-        st.plotly_chart(fig_area, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
 
         df_raw['日付'] = df_raw['日付'].dt.strftime('%Y/%m/%d')
     else:
-        st.info("データがまだありません。最初のデータを記録してください。")
+        st.info("データがまだありません。")
 except Exception as e:
-    st.error(f"データの読み込み中にエラーが発生しました: {e}")
+    st.error(f"エラーが発生しました: {e}")
 
 # ==========================================================
-# 処理2: 資産更新（AI解析 & 保存）
+# 処理2: 資産更新
 # ==========================================================
 st.divider()
 st.subheader("📸 資産状況を更新（AI自動解析）")
