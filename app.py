@@ -1,7 +1,7 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import google.generativeai as genai
 from PIL import Image
 import json
@@ -33,7 +33,7 @@ if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
 def perform_ai_analysis(uploaded_files):
-    prompt = """松井証券の数値抽出。{"cash": 123, "spot": 456, "margin": -789}のJSON形式で。"""
+    prompt = """松井証券の数値抽出。{"cash": 123, "spot": 456, "margin": -789}のJSON形式。"""
     try:
         img = Image.open(uploaded_files[0])
         response = model.generate_content([prompt, img])
@@ -48,7 +48,6 @@ try:
     df_raw = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
     
     if not df_raw.empty:
-        # 日付処理
         df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
         df = df_raw.sort_values(by='日付').reset_index(drop=True)
         
@@ -74,37 +73,65 @@ try:
         
         l_month_label = f"{last_month_date.month}月の収支" if not last_month_df.empty else "前月のデータなし"
         cols[3].metric(l_month_label, f"¥{int(last_month_diff):,}", delta=f"{int(last_month_diff):+,}")
-        
-        t_month_label = f"{latest_date.month}月の収支"
-        cols[4].metric(t_month_label, f"¥{int(this_month_diff):,}", delta=f"{int(this_month_diff):+,}")
+        cols[4].metric(f"{latest_date.month}月の収支", f"¥{int(this_month_diff):,}", delta=f"{int(this_month_diff):+,}")
         
         st.progress(min(float(total / GOAL_AMOUNT), 1.0), text=f"進捗率: {total/GOAL_AMOUNT:.2%}")
 
-        # --- 📈 シンプル版グラフ（日付表示: 26/2） ---
+        # --- 📈 グラフエリア（多機能スイッチ版） ---
         st.divider()
-        st.write("### 🏔️ 資産成長トレンド")
-        
+        g_col1, g_col2 = st.columns([3, 1])
+        with g_col1:
+            st.write("### 🏔️ 資産成長トレンド")
+        with g_col2:
+            view_mode = st.radio("表示単位", ["日単位", "週単位", "月単位"], horizontal=True)
+
+        # 表示期間とフォーマットのロジック
+        if view_mode == "日単位":
+            # 直近7日間
+            plot_df = df[df['日付'] >= (latest_date - timedelta(days=7))].copy()
+            x_format = "%m/%d"
+            dtick = None
+        elif view_mode == "週単位":
+            # 直近12週間（約3ヶ月）
+            plot_df = df.resample('W', on='日付').last().dropna().tail(12).reset_index()
+            x_format = "%m/%d"
+            dtick = None
+        else: # 月単位
+            # 直近12ヶ月（1年）
+            plot_df = df.groupby(df['日付'].dt.to_period('M')).tail(1).copy()
+            plot_df = plot_df.tail(12).reset_index(drop=True)
+            x_format = "%y/%m"
+            dtick = "M1"
+
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=df['日付'], 
-            y=df['総資産'], 
+            x=plot_df['日付'], 
+            y=plot_df['総資産'], 
             fill='tozeroy', 
             name='総資産',
             line=dict(color='#007BFF', width=3),
-            fillcolor='rgba(0, 123, 255, 0.2)'
+            fillcolor='rgba(0, 123, 255, 0.2)',
+            hovertemplate='%{x|%Y/%m/%d}<br>資産: ¥%{y:,.0f}<extra></extra>'
         ))
         
+        # 縦軸の最大値を計算して余裕を持たせる
+        y_max = plot_df['総資産'].max() * 1.1 if not plot_df.empty else 1000000
+
         fig.update_layout(
             template="plotly_dark", 
-            height=400, 
+            height=450, 
             margin=dict(l=20, r=20, t=20, b=20),
             xaxis=dict(
-                tickformat="%y/%-m", # ここで「26/2」の形式に指定
-                showgrid=False
+                tickformat=x_format,
+                dtick=dtick,
+                showgrid=False,
+                type='date'
             ),
             yaxis=dict(
                 showgrid=True, 
-                gridcolor="#333"
+                gridcolor="#333",
+                range=[0, y_max],  # マイナスレンジを排除（0固定）
+                fixedrange=False
             )
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -113,7 +140,7 @@ try:
     else:
         st.info("データがまだありません。")
 except Exception as e:
-    st.error(f"エラーが発生しました: {e}")
+    st.error(f"データ表示エラー: {e}")
 
 # ==========================================================
 # 処理2: 資産更新
@@ -146,7 +173,10 @@ if st.session_state.analyzed:
             with st.spinner('保存中...'):
                 today_str = datetime.now().strftime('%Y/%m/%d')
                 new_total = cash + spot + margin
-                new_entry = pd.DataFrame([{"日付": today_str, "現物買付余力": cash, "現物時価総額": spot, "信用評価損益": margin, "総資産": new_total, "1億円までの残り": GOAL_AMOUNT - new_total}])
+                new_entry = pd.DataFrame([{
+                    "日付": today_str, "現物買付余力": cash, "現物時価総額": spot,
+                    "信用評価損益": margin, "総資産": new_total, "1億円までの残り": GOAL_AMOUNT - new_total
+                }])
                 try:
                     updated_df = pd.concat([df_raw, new_entry], ignore_index=True) if not df_raw.empty else new_entry
                     updated_df['日付'] = pd.to_datetime(updated_df['日付'])
