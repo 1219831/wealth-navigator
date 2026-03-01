@@ -17,10 +17,9 @@ st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="
 # --- 2. 外部連携 ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # 接続の安定性を高めるフルパス指定
     model = genai.GenerativeModel('models/gemini-1.5-flash')
-except Exception as e:
-    st.error(f"API設定エラー: {e}")
+except:
+    st.error("API設定エラー")
     st.stop()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -41,26 +40,19 @@ def perform_ai_analysis(up_file):
     except: return None
 
 @st.cache_data(ttl=3600)
-def get_market_briefing(date_str):
-    prompt = f"""
-    今日は {date_str} です。以下の投資情報を日本語でまとめてください。
-    ■国内決算：本日の注目銘柄と発表件数
-    ■重要指標：日・米・欧・中の経済指数
-    ■特記事項：🚨特に重要なイベントは太字で強調。
-    ※投資助言ではなく客観的な予定表として出力してください。
-    """
+def get_market_briefing(d_str):
+    p = f"今日は{d_str}。国内決算、重要経済指標、🚨重要イベントを簡潔にまとめて。投資助言は不要。"
     try:
-        response = model.generate_content(prompt)
-        return response.text if response.text else "情報の取得を制限中"
-    except Exception as e:
-        return f"💡 準備中 (API Wait: {str(e)[:20]})"
+        res = model.generate_content(p)
+        return res.text if res.text else "取得制限中"
+    except: return "準備中..."
 
-# --- 4. データ読み込み ---
+# --- 4. データ処理 ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("シート接続待ち...")
+    st.warning("接続待ち...")
 
 # --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
@@ -72,7 +64,15 @@ if not df_raw.empty:
     latest = df.iloc[-1]
     ld, total = latest['日付'], latest['総資産']
     
-    # 1. ダッシュボード
+    # 指標計算
+    d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
+    tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
+    tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
+    
+    lm_target = ld.replace(day=1) - timedelta(days=1)
+    lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
+    lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
+
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     with cols[0]:
@@ -81,19 +81,27 @@ if not df_raw.empty:
         st.caption(f"┣ 信用保有資産損益: ¥{int(latest['信用評価損益']):+,}")
         st.caption(f"┗ 現物取得余力: ¥{int(latest['現物買付余力']):,}")
     
-    # 指標計算（安全な複数行処理）
-    d_diff = 0
-    if len(df) > 1:
-        d_diff = total - df.iloc[-2]['総資産']
-    
-    tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
-    tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
-    
-    lm_target = ld.replace(day=1) - timedelta(days=1)
-    lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
-    lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
-
     cols[1].metric("1億円まで", f"¥{int(GOAL - total):,}")
     cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
-    cols[3].metric(f"{lm_target.month}月収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
-    cols[4].metric(
+    cols[3].metric(f"{lm_target.month}月収支", f"¥{int(lm_diff):,}")
+    cols[4].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
+    
+    prg = max(0.0, min(float(total / GOAL), 1.0))
+    st.progress(prg, text=f"目標達成率: {prg:.2%}")
+
+    # 2. AIマーケットダイジェスト
+    st.markdown("---")
+    st.markdown(get_market_briefing(datetime.now().strftime('%Y年%m月%d日')))
+
+    # 3. グラフ
+    st.divider()
+    vc, uc = st.columns([3, 1])
+    with vc: st.write("### 🏔️ 資産成長トレンド")
+    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
+
+    if v_mode == "日":
+        p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
+        if len(p_df) < 2: p_df = df.copy()
+        xf, dtk = "%m/%d", None
+    elif v_mode == "週":
+        p_
