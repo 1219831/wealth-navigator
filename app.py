@@ -40,7 +40,8 @@ def perform_ai_analysis(uploaded_files):
         response = model.generate_content([prompt, img])
         json_str = re.search(r'\{.*\}', response.text, re.DOTALL).group()
         return json.loads(json_str)
-    except Exception: return None
+    except Exception:
+        return None
 
 # ==========================================================
 # 処理1: データ読み込みとダッシュボード表示
@@ -49,7 +50,7 @@ try:
     df_raw = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
     
     if not df_raw.empty:
-        # 日付処理
+        # 日付処理（時間をリセット）
         df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
         df = df_raw.sort_values(by='日付').reset_index(drop=True)
         
@@ -66,7 +67,7 @@ try:
         last_month_df = df[(df['日付'].dt.year == last_month_date.year) & (df['日付'].dt.month == last_month_date.month)]
         last_month_diff = last_month_df.iloc[-1]['総資産'] - last_month_df.iloc[0]['総資産'] if not last_month_df.empty else 0
 
-        # メトリックス（エラー箇所を修正済み）
+        # メトリックス
         st.subheader("📊 資産状況ダッシュボード")
         cols = st.columns(5)
         cols[0].metric("現在の総資産", f"¥{int(total):,}")
@@ -90,7 +91,7 @@ try:
             view_mode = st.radio("表示単位", ["日単位", "月単位"], horizontal=True, key="view_mode")
 
         if view_mode == "月単位":
-            # 月ごとの最終データのみ抽出
+            # 月ごとの最終日だけを抽出して重複を防止
             plot_df = df.groupby(df['日付'].dt.to_period('M')).tail(1).copy()
             x_tick_format = "%y/%m月"
             x_dtick = "M1"
@@ -99,4 +100,78 @@ try:
             x_tick_format = "%y/%m/%d"
             x_dtick = None
 
-        # 縦軸レンジ
+        # 縦軸のゆとり計算（上下10%のバッファ）
+        y_min = plot_df['総資産'].min()
+        y_max = plot_df['総資産'].max()
+        y_buffer = (y_max - y_min) * 0.1 if y_max != y_min else total * 0.1
+        y_range = [y_min - y_buffer, y_max + y_buffer]
+
+        fig_area = go.Figure()
+        fig_area.add_trace(go.Scatter(
+            x=plot_df['日付'], 
+            y=plot_df['総資産'], 
+            fill='tozeroy', 
+            name='総資産',
+            line=dict(color='#007BFF', width=3),
+            fillcolor='rgba(0, 123, 255, 0.15)',
+            hovertemplate='%{x|%Y/%m/%d}<br>資産: ¥%{y:,.0f}<extra></extra>'
+        ))
+        
+        fig_area.update_layout(
+            template="plotly_dark", 
+            height=450, 
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis=dict(tickformat=x_tick_format, dtick=x_dtick, showgrid=False, type='date'),
+            yaxis=dict(title="資産額 (円)", showgrid=True, gridcolor="#333", range=y_range)
+        )
+        st.plotly_chart(fig_area, use_container_width=True)
+
+        df_raw['日付'] = df_raw['日付'].dt.strftime('%Y/%m/%d')
+    else:
+        st.info("データがまだありません。最初のデータを記録してください。")
+except Exception as e:
+    st.error(f"データの読み込み中にエラーが発生しました: {e}")
+
+# ==========================================================
+# 処理2: 資産更新（AI解析 & 保存）
+# ==========================================================
+st.divider()
+st.subheader("📸 資産状況を更新（AI自動解析）")
+uploaded_files = st.file_uploader("スクショをアップロード", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+
+if st.button("AI解析を実行"):
+    if uploaded_files:
+        with st.spinner('Geminiが解析中...'):
+            res = perform_ai_analysis(uploaded_files)
+            if res:
+                st.session_state.ocr_data = res
+                st.session_state.analyzed = True
+                st.success("解析完了！内容を確認してください。")
+            else:
+                st.error("解析失敗")
+                st.session_state.analyzed = True
+    else:
+        st.warning("ファイルを選択してください")
+
+if st.session_state.analyzed:
+    with st.form("confirm_form"):
+        cash = st.number_input("現物買付余力", value=int(st.session_state.ocr_data.get('cash', 0)))
+        spot = st.number_input("現物時価総額", value=int(st.session_state.ocr_data.get('spot', 0)))
+        margin = st.number_input("信用評価損益", value=int(st.session_state.ocr_data.get('margin', 0)))
+        
+        if st.form_submit_button("この内容で記録する"):
+            with st.spinner('保存中...'):
+                today_str = datetime.now().strftime('%Y/%m/%d')
+                new_total = cash + spot + margin
+                new_entry = pd.DataFrame([{"日付": today_str, "現物買付余力": cash, "現物時価総額": spot, "信用評価損益": margin, "総資産": new_total, "1億円までの残り": GOAL_AMOUNT - new_total}])
+                try:
+                    updated_df = pd.concat([df_raw, new_entry], ignore_index=True) if not df_raw.empty else new_entry
+                    updated_df['日付'] = pd.to_datetime(updated_df['日付'])
+                    updated_df = updated_df.sort_values(by='日付').reset_index(drop=True)
+                    updated_df['日付'] = updated_df['日付'].dt.strftime('%Y/%m/%d')
+                    conn.update(spreadsheet=SPREADSHEET_URL, data=updated_df)
+                    st.balloons()
+                    st.session_state.analyzed = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"保存失敗: {e}")
