@@ -14,12 +14,22 @@ URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwW
 
 st.set_page_config(page_title="Wealth Nav", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携 ---
-try:
+# --- 2. 外部連携 (接続リトライ機能付き) ---
+def get_gemini_model():
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('models/gemini-1.5-flash')
-except:
-    st.error("API Error")
+    # 複数のエンドポイントを試行して接続を確保
+    for m_name in ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-pro"]:
+        try:
+            m = genai.GenerativeModel(m_name)
+            # 疎通確認
+            m.generate_content("Hi", generation_config={"max_output_tokens": 1})
+            return m
+        except: continue
+    return None
+
+model = get_gemini_model()
+if not model:
+    st.error("API接続に失敗しました。Keyを確認してください。")
     st.stop()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -40,12 +50,17 @@ def perform_ai_analysis(up_file):
     except: return None
 
 @st.cache_data(ttl=3600)
-def get_market_briefing(d_str):
-    p = f"今日は{d_str}。先週末の米株日本株、明日からの国内決算、指標、🚨注目点を日本語で短くまとめて。"
+def get_market_briefing(d_str, is_weekend):
+    if is_weekend:
+        p = f"今日は{d_str}(週末)。先週の米株日本株振り返りと、明日からの決算・指標予定を短くまとめて。"
+    else:
+        p = f"今日は{d_str}(平日)。昨晩の米株動向、本日の日本株見通し、重要決算・指標を短くまとめて。"
+    
     try:
         res = model.generate_content(p)
-        return res.text if res.text else "情報の取得制限中"
-    except: return "データ整理中..."
+        return res.text if res.text else "情報の取得制限中です。"
+    except:
+        return "💡 市場データを整理中。リロードするか、少し時間をおいてください。"
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
@@ -58,7 +73,6 @@ except:
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
-    # データ型を徹底的に正規化
     df_raw['日付'] = pd.to_datetime(df_raw['日付'], errors='coerce')
     df_raw = df_raw.dropna(subset=['日付'])
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
@@ -85,15 +99,18 @@ if not df_raw.empty:
     cols[3].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     cols[4].metric("達成率", f"{total/GOAL:.2%}")
     
-    # 達成率バー
     prg_v = max(0.0, min(float(total / GOAL), 1.0))
     st.progress(prg_v)
 
-    # 2. AIマーケットダイジェスト
+    # 2. 【動的】AIマーケットダイジェスト
     st.divider()
-    st.subheader("🗓️ 週末マーケット要約")
-    t_key = datetime.now().strftime('%Y-%m-%d')
-    st.markdown(get_market_briefing(t_key))
+    now = datetime.now()
+    is_weekend = now.weekday() >= 5 # 5:土, 6:日
+    title = "🗓️ 週末マーケット要約" if is_weekend else "📈 本日のマーケット要約"
+    st.subheader(title)
+    
+    t_key = now.strftime('%Y-%m-%d')
+    st.markdown(get_market_briefing(t_key, is_weekend))
 
     # 3. グラフ
     st.divider()
@@ -121,7 +138,6 @@ if not df_raw.empty:
             line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
             mode='lines+markers' if len(p_df) < 20 else 'lines'
         ))
-        # 断線対策：1つずつ設定
         fig.update_layout(template="plotly_dark", height=400)
         fig.update_layout(margin=dict(l=50, r=20, t=20, b=50))
         fig.update_xaxes(tickformat=xf, type='date')
