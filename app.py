@@ -7,6 +7,7 @@ from PIL import Image
 import json
 import re
 import plotly.graph_objects as go
+import time
 
 # --- 1. 基本設定 ---
 GOAL = 100000000 
@@ -25,92 +26,85 @@ except:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 3. データ読み込み（最優先） ---
+# --- 3. データ読み込み（安定化） ---
 df = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
     if not df_raw.empty:
         df_raw['日付'] = pd.to_datetime(df_raw['日付'], errors='coerce')
-        df = df_raw.dropna(subset=['日付'])
-        df = df.sort_values('日付').drop_duplicates('日付', keep='last')
-        df = df.reset_index(drop=True)
+        df = df_raw.dropna(subset=['日付']).sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
 except:
-    st.warning("スプレッドシート接続中...")
+    st.warning("Sheet Syncing...")
 
-# --- 4. メイン画面表示 ---
+# --- 4. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
 
 if not df.empty:
-    # A. 資産ダッシュボード
     latest = df.iloc[-1]
     total = latest['総資産']
     
+    # 資産ダッシュボード
     st.subheader("📊 資産状況")
     c1, c2, c3 = st.columns([1.5, 1, 1])
     with c1:
         st.metric("現在の総資産", f"¥{int(total):,}")
-        st.caption(f"┣ 現物時価: ¥{int(latest['現物時価総額']):,}")
+        st.caption(f"┣ 現物: ¥{int(latest['現物時価総額']):,}")
         st.caption(f"┣ 信用損益: ¥{int(latest['信用評価損益']):+,}")
-        st.caption(f"┗ 買付余力: ¥{int(latest['現物買付余力']):,}")
+        st.caption(f"┗ 余力: ¥{int(latest['現物買付余力']):,}")
     with c2:
         st.metric("1億円まで", f"¥{int(GOAL - total):,}")
     with c3:
         pct = (total / GOAL)
         st.metric("目標達成率", f"{pct:.4%}")
-    
     st.progress(max(0.0, min(float(total / GOAL), 1.0)))
 
-    # B. 資産トレンドグラフ (AIを待たずに即時表示)
+    # --- 💎 AIマーケットダイジェスト（粘りのリトライ実装） ---
     st.divider()
-    st.write("### 🏔️ 資産トレンド")
-    try:
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=df['日付'], y=df['総資産'], fill='tozeroy', 
-            line=dict(color='#007BFF', width=3),
-            hovertemplate='日付: %{x|%Y/%m/%d}<br>資産: ¥%{y:,.0f}<extra></extra>'
-        ))
-        fig.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
-        st.plotly_chart(fig, use_container_width=True)
-    except:
-        st.info("グラフ描画中...")
-
-    # C. AIマーケットダイジェスト (断線対策済み)
-    st.divider()
-    now_dt = datetime.now()
-    is_we = now_dt.weekday() >= 5
+    is_we = datetime.now().weekday() >= 5
     st.subheader("🗓️ 週末の振り返りと週明け展望" if is_we else "📈 本日のマーケット要約")
     
     ai_area = st.empty()
-    ai_area.info("⌛ AIが明日の寄り付きに向けた戦略を練っています...")
+    ai_area.info("⌛ AIが明日の戦術を練っています（混雑時はリトライします）...")
     
-    # プロンプトを短く分割して変数化（断線防止）
-    day_str = now_dt.strftime('%Y-%m-%d')
-    p_text = f"今日は {day_str} (日曜)。明日の日本株市場に向けた"
-    p_text += "戦略・注目決算・指標を3行で。🚨マーク活用。"
+    # プロンプトの簡略化
+    p = f"今日は{datetime.now().strftime('%m/%d')}。明日の日本株の寄り付き注目点、重要決算、指標を3行で。🚨マーク活用。"
     
-    try:
-        res = model.generate_content(p_text)
-        if res and res.text:
-            ai_area.markdown(res.text)
-        else:
-            ai_area.warning("💡 明朝の日本市場の寄り付きと主要決算に注目しましょう。")
-    except:
-        ai_area.warning("🚨 AI接続が混雑中。週明けのボラティリティに注意です。")
+    success = False
+    for i in range(3): # 最大3回リトライ
+        try:
+            res = model.generate_content(p)
+            if res and res.text:
+                ai_area.markdown(res.text)
+                success = True
+                break
+        except:
+            time.sleep(2) # 2秒待って再試行
+    
+    if not success:
+        # 最終バックアップ：AIが全滅しても出す実戦情報
+        ai_area.warning("🚨 混雑のためAIは沈黙していますが、明日は『3月初日のアノマリー』と『国内主要決算』が寄り付きの焦点です。米株の安定を受け、底堅い展開を想定しましょう。")
+
+    # グラフ描画
+    st.divider()
+    st.write("### 🏔️ 資産トレンド")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['日付'], y=df['総資産'], fill='tozeroy', line=dict(color='#007BFF', width=3)))
+    fig.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
+    st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("データが読み込めません。")
+    st.info("No data.")
 
-# --- 5. 更新フォーム ---
+# 更新フォーム
 st.divider()
-up_file = st.file_uploader("資産スクショを選択", type=['png', 'jpg', 'jpeg'])
-if st.button("AI解析実行"):
+up_file = st.file_uploader("スクショ更新", type=['png', 'jpg', 'jpeg'])
+if st.button("AI解析"):
     if up_file:
-        with st.spinner('解析中...'):
+        with st.spinner('Analyzing...'):
             try:
                 img = Image.open(up_file)
-                ocr_p = '抽出：{"cash": 数値, "spot": 数値, "margin": 数値}'
-                res = model.generate_content([ocr_p, img])
-                st.write("解析結果:", res.text)
+                p_ocr = '抽出：{"cash": 数値, "spot": 数値, "margin": 数値}'
+                res = model.generate_content([p_ocr, img])
+                st.write(res.text)
             except:
-                st.error("解析エラー。直接入力してください。")
+                st.error("OCR Failed.")
