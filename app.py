@@ -12,14 +12,14 @@ import plotly.graph_objects as go
 GOAL = 100000000 
 URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwWt0aWJEa_Is/edit"
 
-st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Wealth Nav", page_icon="📈", layout="wide")
 
 # --- 2. 外部連携 ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('models/gemini-1.5-flash')
 except:
-    st.error("API設定エラー")
+    st.error("API Error")
     st.stop()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -41,23 +41,24 @@ def perform_ai_analysis(up_file):
 
 @st.cache_data(ttl=3600)
 def get_market_briefing(d_str):
-    p = f"今日は{d_str}。先週末の米株日本株振り返り、明日からの国内決算、重要指標、🚨重要イベントを日本語で簡潔にまとめて。投資助言は不要。"
+    p = f"今日は{d_str}。先週末の米株日本株、明日からの国内決算、指標、🚨注目点を日本語で短くまとめて。"
     try:
         res = model.generate_content(p)
-        return res.text if res.text else "情報の取得を制限中"
-    except: return "整理中..."
+        return res.text if res.text else "情報の取得制限中"
+    except: return "データ整理中..."
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("スプレッドシート接続待ち...")
+    st.warning("Sheet Wait...")
 
-# --- 5. メイン表示 ---
+# --- 5. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
+    # データ型を徹底的に正規化
     df_raw['日付'] = pd.to_datetime(df_raw['日付'], errors='coerce')
     df_raw = df_raw.dropna(subset=['日付'])
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
@@ -65,41 +66,109 @@ if not df_raw.empty:
     latest = df.iloc[-1]
     ld, total = latest['日付'], latest['総資産']
     
-    # 収支計算（断線対策：事前に文字列化）
+    # 指標計算
     d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
     tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
     tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
     
-    # 表示用のラベルと値を変数化
-    m_val = f"¥{int(total):,}"
-    d_label = f"{ld.month}月収支"
-    d_val = f"¥{int(tm_diff):,}"
-    d_delta = f"{int(tm_diff):+,}"
-
-    st.subheader("📊 資産状況ダッシュボード")
+    # 1. ダッシュボード
+    st.subheader("📊 資産状況")
     cols = st.columns([1.2, 1, 1, 1, 1])
     with cols[0]:
-        st.metric("現在の総資産", m_val)
-        st.caption(f"┣ 現物資産時価総額: ¥{int(latest['現物時価総額']):,}")
-        st.caption(f"┣ 信用保有資産損益: ¥{int(latest['信用評価損益']):+,}")
-        st.caption(f"┗ 現物取得余力: ¥{int(latest['現物買付余力']):,}")
+        st.metric("総資産", f"¥{int(total):,}")
+        st.caption(f"┣ 現物時価: ¥{int(latest['現物時価総額']):,}")
+        st.caption(f"┣ 信用損益: ¥{int(latest['信用評価損益']):+,}")
+        st.caption(f"┗ 買付余力: ¥{int(latest['現物買付余力']):,}")
     
-    cols[1].metric("1億円まで", f"¥{int(GOAL - total):,}")
+    cols[1].metric("目標まで", f"¥{int(GOAL - total):,}")
     cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
-    cols[3].metric(d_label, d_val, delta=d_delta) # 短文化で断線防止
-    cols[4].metric("目標達成率", f"{total/GOAL:.2%}")
+    cols[3].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
+    cols[4].metric("達成率", f"{total/GOAL:.2%}")
     
-    # 進捗バー
+    # 達成率バー
     prg_v = max(0.0, min(float(total / GOAL), 1.0))
     st.progress(prg_v)
 
-    # AIマーケット情報
+    # 2. AIマーケットダイジェスト
     st.divider()
-    st.subheader("🗓️ 週末マーケット・ダイジェスト")
-    today_key = datetime.now().strftime('%Y-%m-%d')
-    st.markdown(get_market_briefing(today_key))
+    st.subheader("🗓️ 週末マーケット要約")
+    t_key = datetime.now().strftime('%Y-%m-%d')
+    st.markdown(get_market_briefing(t_key))
 
-    # グラフセクション
+    # 3. グラフ
     st.divider()
     vc, uc = st.columns([3, 1])
-    with vc: st.write("
+    with vc: st.write("### 🏔️ 資産トレンド")
+    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
+
+    try:
+        if v_mode == "日":
+            p_df = df[df['日付'] >= (ld - timedelta(days=30))].copy()
+            xf = "%m/%d"
+        elif v_mode == "週":
+            p_df = df.set_index('日付').resample('W').last().dropna().reset_index()
+            xf = "%m/%d"
+        else:
+            p_df = df.set_index('日付').resample('M').last().dropna().reset_index()
+            xf = "%y/%m"
+        
+        if p_df.empty: p_df = df.copy()
+
+        y_m = p_df['総資産'].max() * 1.15
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
+            line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
+            mode='lines+markers' if len(p_df) < 20 else 'lines'
+        ))
+        # 断線対策：1つずつ設定
+        fig.update_layout(template="plotly_dark", height=400)
+        fig.update_layout(margin=dict(l=50, r=20, t=20, b=50))
+        fig.update_xaxes(tickformat=xf, type='date')
+        fig.update_yaxes(range=[0, y_m], tickformat=",d")
+        st.plotly_chart(fig, use_container_width=True)
+    except:
+        st.info("Graph Wait...")
+
+else:
+    st.info("No Data.")
+
+# --- 6. 更新フォーム ---
+st.divider()
+st.subheader("📸 資産更新")
+up_file = st.file_uploader("スクショ選択", type=['png', 'jpg', 'jpeg'])
+
+if st.button("AI解析"):
+    if up_file:
+        with st.spinner('Wait...'):
+            res = perform_ai_analysis(up_file)
+            if res:
+                st.session_state.ocr_data = res
+                st.session_state.analyzed = True
+                st.success("OK!")
+
+if st.session_state.analyzed:
+    with st.form("edit"):
+        c1, c2, c3 = st.columns(3)
+        ocr = st.session_state.ocr_data
+        n_c = c1.number_input("余力", value=int(ocr.get('cash', 0)))
+        n_s = c2.number_input("時価", value=int(ocr.get('spot', 0)))
+        n_m = c3.number_input("損益", value=int(ocr.get('margin', 0)))
+        if st.form_submit_button("記録"):
+            td = datetime.now().strftime('%Y/%m/%d')
+            tv = n_c + n_s + n_m
+            ent = pd.DataFrame([{
+                "日付": td, "現物買付余力": n_c, "現物時価総額": n_s,
+                "信用評価損益": n_m, "総資産": tv, "1億円までの残り": GOAL - tv
+            }])
+            try:
+                out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
+                out['日付'] = pd.to_datetime(out['日付'])
+                out = out.sort_values('日付').drop_duplicates('日付', keep='last')
+                out['日付'] = out['日付'].dt.strftime('%Y/%m/%d')
+                conn.update(spreadsheet=URL, data=out)
+                st.balloons()
+                st.session_state.analyzed = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
