@@ -37,11 +37,11 @@ except:
 st.title("🚀 Wealth Navigator PRO")
 
 if not df.empty:
+    # A. 資産ダッシュボード (最優先で表示)
     latest = df.iloc[-1]
     total = latest['総資産']
     m_profit = latest['信用評価損益']
     
-    # 資産ダッシュボード
     st.subheader("📊 資産状況")
     c1, c2, c3 = st.columns([1.5, 1, 1])
     with c1:
@@ -55,60 +55,35 @@ if not df.empty:
         st.metric("目標達成率", f"{pct:.4%}")
     st.progress(max(0.0, min(float(total / GOAL), 1.0)))
 
-    # --- 💎 参謀本部：銘柄直撃アラート (断線対策済み) ---
+    # --- 💎 参謀本部：銘柄・イベント直撃ボード ---
     st.divider()
-    st.subheader("⚔️ 参謀本部：ポートフォリオ防衛指令")
+    st.subheader("⚔️ 参謀本部：明日の決戦指令")
     
-    # 指令エリアの確保
-    alert_box = st.empty()
-    
-    # プロンプトの単語分割（断線してもエラーにならない形式）
-    p_parts = [
-        "あなたは投資参謀です。",
-        f"現在の信用損益は {m_profit}円です。",
-        "明日の伊藤園(2593)とピープル(7865)の決算による銘柄波及リスク、",
-        "および深夜24時の米ISM指数による円高・信用維持率への警告、",
-        "ボスが寄り付きで取るべき具体的な防衛・攻めの行動を100字で答えて。"
+    # AIへの指令を構築
+    p_lines = [
+        "あなたは投資家ボスの有能な参謀です。",
+        f"現在のボスの信用損益は {m_profit}円 です。",
+        "明日の『伊藤園(2593)』『ピープル(7865)』の決算発表、",
+        "および今夜24時の『米国ISM製造業景況指数』を踏まえ、",
+        "1. 具体的な注目ポイント",
+        "2. 保有株(現物・信用)への注意喚起と明日寄り付きの行動",
+        "を150文字以内で鋭くアドバイスしてください。"
     ]
-    p_final = " ".join(p_parts)
+    p_final = " ".join(p_lines)
+
+    # プレースホルダーの設置
+    advice_box = st.empty()
 
     try:
-        # AI解析
         res = model.generate_content(p_final, generation_config={"temperature": 0.4})
         if res and res.text:
-            alert_box.warning(res.text)
+            advice_box.warning(res.text)
     except:
-        # バックアップメッセージも分割して安全に表示
-        b_msg = [
+        # AIエラー時のフォールバック
+        fallback = [
             "🚨 【緊急参謀警告】",
-            f"信用損益 {m_profit:+,}円 を考慮すると、",
-            "深夜の米ISMによる円高急伸は追証リスクに直結します。",
-            "明日は【余力維持】を最優先し、現物株の利確ラインを5%上に再設定してください。"
+            f"信用損益 {m_profit:+,}円 の状況下では、今夜のISMによるドル円急変が",
+            "最大の懸念材料です。伊藤園決算は内需の避難先となる可能性がありますが、",
+            "明日は【余力維持】を最優先し、寄り付きの買い一巡後の動きを注視せよ。"
         ]
-        alert_box.error("\n".join(b_msg))
-
-    # グラフ表示
-    st.divider()
-    st.write("### 🏔️ 資産トレンド")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df['日付'], y=df['総資産'], fill='tozeroy', line=dict(color='#007BFF', width=3)))
-    fig.update_layout(template="plotly_dark", height=350, margin=dict(l=10, r=10, t=10, b=10))
-    st.plotly_chart(fig, use_container_width=True)
-
-else:
-    st.info("データが読み込めません。")
-
-# --- 5. 更新フォーム ---
-st.divider()
-up_file = st.file_uploader("資産スクショを選択", type=['png', 'jpg', 'jpeg'])
-if st.button("AI解析実行"):
-    if up_file:
-        with st.spinner('Analyzing...'):
-            try:
-                img = Image.open(up_file)
-                # 解析プロンプトも短縮
-                ocr_p = '抽出: {"cash":数値, "spot":数値, "margin":数値}'
-                res = model.generate_content([ocr_p, img])
-                st.write(res.text)
-            except:
-                st.error("解析エラー")
+        advice
