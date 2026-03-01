@@ -9,12 +9,12 @@ import re
 import plotly.graph_objects as go
 
 # --- 1. 基本設定 ---
-GOAL_AMOUNT = 100000000 
+GOAL = 100000000 
 URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwWt0aWJEa_Is/edit"
 
 st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携 ---
+# --- 2. 外部連携設定 ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -24,13 +24,13 @@ except Exception:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# セッション管理
+# セッション状態管理
 if 'analyzed' not in st.session_state:
     st.session_state.analyzed = False
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI解析関数 ---
+# AI解析（OCR）関数
 def perform_ai_analysis(up_file):
     p = '松井証券の数値抽出。{"cash": 100, "spot": 200, "margin": -50} の形式。'
     try:
@@ -45,14 +45,14 @@ def perform_ai_analysis(up_file):
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
-except Exception as e:
-    st.error(f"接続エラー: {e}")
+except Exception:
+    st.warning("シート接続待ち...")
 
-# --- 5. メイン画面 ---
+# --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
-    # データ加工
+    # データクリーニング
     df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
     
@@ -63,10 +63,10 @@ if not df_raw.empty:
     # 指標計算
     d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
     tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
-    tm_diff = total - tm_df.iloc[0]['総資産']
+    tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
     
-    lm_day = ld.replace(day=1) - timedelta(days=1)
-    lm_df = df[df['日付'].dt.to_period('M') == lm_day.to_period('M')]
+    lm_target = ld.replace(day=1) - timedelta(days=1)
+    lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
     # 1. ダッシュボード表示
@@ -79,12 +79,12 @@ if not df_raw.empty:
         st.caption(f"┣ 信用保有資産損益: ¥{int(latest['信用評価損益']):+,}")
         st.caption(f"┗ 現物取得余力: ¥{int(latest['現物買付余力']):,}")
     
-    cols[1].metric("1億円まであと", f"¥{int(GOAL_AMOUNT - total):,}")
+    cols[1].metric("1億円まであと", f"¥{int(GOAL - total):,}")
     cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
-    cols[3].metric(f"{lm_day.month}月の収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
+    cols[3].metric(f"{lm_target.month}月の収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
     cols[4].metric(f"{ld.month}月の収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     
-    prg = max(0.0, min(float(total / GOAL_AMOUNT), 1.0))
+    prg = max(0.0, min(float(total / GOAL), 1.0))
     st.progress(prg, text=f"目標達成率: {prg:.2%}")
 
     # 2. グラフセクション
@@ -95,37 +95,85 @@ if not df_raw.empty:
     with uc:
         v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
 
-    # グラフ用データフィルタリングと安全策
+    # フィルタリングロジック
     if v_mode == "日":
-        plot_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
-        if len(plot_df) < 2: plot_df = df.tail(10) # 7日分なければ直近10件
+        p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
+        if len(p_df) < 2: p_df = df.copy() # データ不足時は全件
         x_fmt, dtk = "%m/%d", None
     elif v_mode == "週":
-        plot_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
-        if len(plot_df) < 2: plot_df = df.tail(15) # 週次データがなければ直近15件
+        p_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
+        if len(p_df) < 2: p_df = df.copy()
         x_fmt, dtk = "%m/%d", None
     else:
         # 月別
-        df_p = df.copy()
-        df_p['m'] = df_p['日付'].dt.to_period('M')
-        plot_df = df_p.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
-        if len(plot_df) < 2: plot_df = df.tail(30) # 月次がなければ直近30件
+        df_m = df.copy()
+        df_m['m'] = df_m['日付'].dt.to_period('M')
+        p_df = df_m.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
+        if len(p_df) < 2: p_df = df.copy()
         x_fmt, dtk = "%y/%m", "M1"
 
     # グラフ描画
-    y_m = plot_df['総資産'].max() * 1.15 if not plot_df.empty else 1000000
+    ymax = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=plot_df['日付'], 
-        y=plot_df['総資産'], 
-        fill='tozeroy', 
-        name='総資産',
+        x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
         line=dict(color='#007BFF', width=4), 
         fillcolor='rgba(0, 123, 255, 0.15)',
         mode='lines+markers' if v_mode == "日" else 'lines',
         hovertemplate='<b>%{x|%Y/%m/%d}</b><br>資産: ¥%{y:,.0f}<extra></extra>'
     ))
     
+    # レイアウト設定（エラー再発防止のためシンプルに記述）
     fig.update_layout(
-        template="plotly_dark", 
-        height=
+        template="plotly_dark",
+        height=450,
+        margin=dict(l=50, r=20, t=20, b=50),
+        xaxis=dict(tickformat=x_fmt, dtick=dtk, showgrid=False, type='date'),
+        yaxis=dict(range=[0, ymax], showgrid=True, gridcolor="#333", tickformat=",d"),
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+else:
+    st.info("データがありません。スクショをアップしてください。")
+
+# --- 6. 更新フォーム ---
+st.divider()
+st.subheader("📸 資産状況を更新")
+up_file = st.file_uploader("スクショを選択", type=['png', 'jpg', 'jpeg'])
+
+if st.button("AI解析を実行"):
+    if up_file:
+        with st.spinner('解析中...'):
+            res = perform_ai_analysis(up_file)
+            if res:
+                st.session_state.ocr_data = res
+                st.session_state.analyzed = True
+                st.success("解析成功！")
+            else:
+                st.error("解析失敗")
+
+if st.session_state.analyzed:
+    with st.form("edit_form"):
+        c1, c2, c3 = st.columns(3)
+        v_c = int(st.session_state.ocr_data.get('cash', 0))
+        v_s = int(st.session_state.ocr_data.get('spot', 0))
+        v_m = int(st.session_state.ocr_data.get('margin', 0))
+        n_c = c1.number_input("現物取得余力", value=v_c)
+        n_s = c2.number_input("現物資産時価総額", value=v_s)
+        n_m = c3.number_input("信用保有資産損益", value=v_m)
+        if st.form_submit_button("記録する"):
+            td = datetime.now().strftime('%Y/%m/%d')
+            tv = n_c + n_s + n_m
+            ent = pd.DataFrame([{"日付": td, "現物買付余力": n_c, "現物時価総額": n_s, "信用評価損益": n_m, "総資産": tv, "1億円までの残り": GOAL - tv}])
+            try:
+                out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
+                out['日付'] = pd.to_datetime(out['日付'])
+                out = out.sort_values('日付').drop_duplicates('日付', keep='last')
+                out['日付'] = out['日付'].dt.strftime('%Y/%m/%d')
+                conn.update(spreadsheet=URL, data=out)
+                st.balloons()
+                st.session_state.analyzed = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"保存失敗: {e}")
