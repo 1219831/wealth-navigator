@@ -24,40 +24,44 @@ except:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# セッション状態
 if 'analyzed' not in st.session_state:
     st.session_state.analyzed = False
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI関数 ---
+# --- 3. AI解析エンジン ---
 def perform_ai_analysis(up_file):
-    p = '松井証券の数値抽出。{"cash": 100, "spot": 200, "margin": -50} の形式で。'
+    p = '抽出項目：{"cash": 数値, "spot": 数値, "margin": 数値}'
     try:
         img = Image.open(up_file)
         res = model.generate_content([p, img])
         j_str = re.search(r'\{.*\}', res.text, re.DOTALL).group()
         return json.loads(j_str)
-    except: return None
+    except:
+        return None
 
 @st.cache_data(ttl=3600)
-def get_investment_briefing(d_key):
-    p = f"本日は{d_key}。国内決算、日米欧中の重要指標、🚨重要イベントを簡潔にまとめて。"
+def get_market_brief(d_key):
+    p = f"本日は{d_key}。日本・海外の重要指標と決算、🚨重要イベントを簡潔にリスト化して。"
     try:
         res = model.generate_content(p)
         return res.text if res.text else "取得制限中"
-    except: return "準備中..."
+    except:
+        return "マーケット情報は準備中です。"
 
 # --- 4. データ処理 ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("接続待ち...")
+    st.warning("スプレッドシート接続待ち...")
 
-# --- 5. メイン表示 ---
+# --- 5. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
+    # データ正規化
     df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
     
@@ -73,6 +77,7 @@ if not df_raw.empty:
     lm_df = df[df['日付'].dt.to_period('M') == lm_day.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
+    # メトリックス表示
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     
@@ -89,31 +94,33 @@ if not df_raw.empty:
     
     st.progress(max(0.0, min(float(total / GOAL), 1.0)), text=f"達成率: {total/GOAL:.2%}")
 
-    # AIイベント
-    st.divider()
-    with st.expander("🗓️ 本日の投資イベント", expanded=True):
-        st.markdown(get_investment_briefing(datetime.now().strftime('%Y-%m-%d')))
+    # AIイベントダイジェスト
+    st.markdown("---")
+    with st.expander("🗓️ 本日の投資イベント・ダイジェスト", expanded=True):
+        st.write(get_market_brief(datetime.now().strftime('%Y-%m-%d')))
 
-    # グラフ
+    # グラフエリア
     st.divider()
     vc, uc = st.columns([3, 1])
-    with vc: st.write("### 🏔️ 資産成長トレンド")
-    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
+    with vc:
+        st.write("### 🏔️ 資産成長トレンド")
+    with uc:
+        v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
 
     if v_mode == "日":
         p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
         if len(p_df) < 2: p_df = df.copy()
-        x_f, dtk = "%m/%d", None
+        x_fmt, dtk = "%m/%d", None
     elif v_mode == "週":
         p_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
         if len(p_df) < 2: p_df = df.copy()
-        x_f, dtk = "%m/%d", None
+        x_fmt, dtk = "%m/%d", None
     else:
         df_m = df.copy()
         df_m['m'] = df_m['日付'].dt.to_period('M')
         p_df = df_m.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
         if len(p_df) < 2: p_df = df.copy()
-        x_f, dtk = "%y/%m", "M1"
+        x_fmt, dtk = "%y/%m", "M1"
 
     y_max = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
     fig = go.Figure()
@@ -124,7 +131,7 @@ if not df_raw.empty:
     ))
     fig.update_layout(
         template="plotly_dark", height=400, margin=dict(l=50, r=20, t=20, b=50),
-        xaxis=dict(tickformat=x_f, dtick=dtk, type='date'),
+        xaxis=dict(tickformat=x_fmt, dtick=dtk, type='date'),
         yaxis=dict(range=[0, y_max], tickformat=",d"),
         hovermode="x unified"
     )
@@ -139,4 +146,36 @@ up_file = st.file_uploader("スクショを選択", type=['png', 'jpg', 'jpeg'])
 
 if st.button("AI解析を実行"):
     if up_file:
-        with st.spinner
+        with st.spinner('解析中...'):
+            res = perform_ai_analysis(up_file)
+            if res:
+                st.session_state.ocr_data = res
+                st.session_state.analyzed = True
+                st.success("解析成功！内容を確認してください。")
+
+if st.session_state.analyzed:
+    with st.form("edit_form"):
+        c1, c2, c3 = st.columns(3)
+        ocr = st.session_state.ocr_data
+        n_c = c1.number_input("現物取得余力", value=int(ocr.get('cash', 0)))
+        n_s = c2.number_input("現物資産時価総額", value=int(ocr.get('spot', 0)))
+        n_m = c3.number_input("信用保有資産損益", value=int(ocr.get('margin', 0)))
+        
+        if st.form_submit_button("記録する"):
+            today = datetime.now().strftime('%Y/%m/%d')
+            t_v = n_c + n_s + n_m
+            ent = pd.DataFrame([{
+                "日付": today, "現物買付余力": n_c, "現物時価総額": n_s,
+                "信用評価損益": n_m, "総資産": t_v, "1億円までの残り": GOAL - t_v
+            }])
+            try:
+                out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
+                out['日付'] = pd.to_datetime(out['日付'])
+                out = out.sort_values('日付').drop_duplicates('日付', keep='last')
+                out['日付'] = out['日付'].dt.strftime('%Y/%m/%d')
+                conn.update(spreadsheet=URL, data=out)
+                st.balloons()
+                st.session_state.analyzed = False
+                st.rerun()
+            except Exception as e:
+                st.error(f"保存失敗: {e}")
