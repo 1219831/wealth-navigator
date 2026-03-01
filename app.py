@@ -14,7 +14,7 @@ URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwW
 
 st.set_page_config(page_title="Wealth Navigator PRO", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携 (404対策) ---
+# --- 2. 外部連携 ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('models/gemini-1.5-flash')
@@ -41,13 +41,13 @@ def perform_ai_analysis(up_file):
 
 @st.cache_data(ttl=86400)
 def get_market_briefing(d_str):
-    p = f"今日は{d_str}。国内決算(銘柄と数)、重要経済指標(日米欧中)、🚨重要イベントを簡潔にまとめて。投資助言は不要。"
+    p = f"今日は{d_str}。明日からの国内決算(数社)、重要経済指標、🚨注目イベントを簡潔にまとめて。投資助言は不要。"
     try:
         res = model.generate_content(p)
         return res.text if res.text else "取得制限中"
     except: return "準備中..."
 
-# --- 4. データ処理 ---
+# --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
@@ -73,7 +73,7 @@ if not df_raw.empty:
     lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
-    # ダッシュボード表示
+    # ダッシュボード
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     with cols[0]:
@@ -87,5 +87,6 @@ if not df_raw.empty:
     cols[3].metric(f"{lm_target.month}月収支", f"¥{int(lm_diff):,}")
     cols[4].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     
-    prg = max(0.0, min(float(total / GOAL), 1.0))
-    st.progress(prg, text=f"目標達成率: {prg:.
+    # 目標達成率の計算（断線対策で分割）
+    pct = total / GOAL
+    prg_val = max(0.0, min(float(pct), 1.0))
