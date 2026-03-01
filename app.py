@@ -14,22 +14,33 @@ URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwW
 
 st.set_page_config(page_title="Wealth Nav", page_icon="📈", layout="wide")
 
-# --- 2. 外部連携 (接続リトライ機能付き) ---
-def get_gemini_model():
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # 複数のエンドポイントを試行して接続を確保
-    for m_name in ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-pro"]:
-        try:
-            m = genai.GenerativeModel(m_name)
-            # 疎通確認
-            m.generate_content("Hi", generation_config={"max_output_tokens": 1})
-            return m
-        except: continue
-    return None
+# --- 2. 外部連携 (接続チェック強化版) ---
+def init_gemini():
+    try:
+        # Secretからキーを取得
+        key = st.secrets["GEMINI_API_KEY"]
+        genai.configure(api_key=key)
+        
+        # モデル候補（2026年現在の安定版）
+        for m_name in ["gemini-1.5-flash", "models/gemini-1.5-flash", "gemini-pro"]:
+            try:
+                m = genai.GenerativeModel(m_name)
+                # 疎通テスト（1トークンだけ生成）
+                m.generate_content("test", generation_config={"max_output_tokens": 1})
+                return m
+            except:
+                continue
+        return None
+    except KeyError:
+        st.error("Secretsに 'GEMINI_API_KEY' が登録されていません。")
+        st.stop()
+    except Exception as e:
+        st.error(f"API初期化中にエラー: {e}")
+        st.stop()
 
-model = get_gemini_model()
+model = init_gemini()
 if not model:
-    st.error("API接続に失敗しました。Keyを確認してください。")
+    st.error("API接続に失敗しました。Keyが有効か、またはGemini 1.5の利用権限があるか確認してください。")
     st.stop()
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -52,22 +63,21 @@ def perform_ai_analysis(up_file):
 @st.cache_data(ttl=3600)
 def get_market_briefing(d_str, is_weekend):
     if is_weekend:
-        p = f"今日は{d_str}(週末)。先週の米株日本株振り返りと、明日からの決算・指標予定を短くまとめて。"
+        p = f"今日は{d_str}(週末)。先週の市場振り返りと明日からの指標・注目イベントを日本語で短くまとめて。"
     else:
-        p = f"今日は{d_str}(平日)。昨晩の米株動向、本日の日本株見通し、重要決算・指標を短くまとめて。"
-    
+        p = f"今日は{d_str}(平日)。昨晩の米株、本日の日本株見通し、重要決算・指標を日本語で短くまとめて。"
     try:
         res = model.generate_content(p)
-        return res.text if res.text else "情報の取得制限中です。"
+        return res.text if res.text else "情報の取得制限中"
     except:
-        return "💡 市場データを整理中。リロードするか、少し時間をおいてください。"
+        return "💡 マーケット情報を整理中。リロードをお試しください。"
 
 # --- 4. データ読み込み ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("Sheet Wait...")
+    st.warning("スプレッドシート接続待ち...")
 
 # --- 5. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
@@ -99,18 +109,15 @@ if not df_raw.empty:
     cols[3].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     cols[4].metric("達成率", f"{total/GOAL:.2%}")
     
-    prg_v = max(0.0, min(float(total / GOAL), 1.0))
-    st.progress(prg_v)
+    st.progress(max(0.0, min(float(total / GOAL), 1.0)))
 
-    # 2. 【動的】AIマーケットダイジェスト
+    # 2. 動的マーケットダイジェスト
     st.divider()
     now = datetime.now()
-    is_weekend = now.weekday() >= 5 # 5:土, 6:日
+    is_weekend = now.weekday() >= 5
     title = "🗓️ 週末マーケット要約" if is_weekend else "📈 本日のマーケット要約"
     st.subheader(title)
-    
-    t_key = now.strftime('%Y-%m-%d')
-    st.markdown(get_market_briefing(t_key, is_weekend))
+    st.markdown(get_market_briefing(now.strftime('%Y-%m-%d'), is_weekend))
 
     # 3. グラフ
     st.divider()
@@ -138,16 +145,15 @@ if not df_raw.empty:
             line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
             mode='lines+markers' if len(p_df) < 20 else 'lines'
         ))
-        fig.update_layout(template="plotly_dark", height=400)
-        fig.update_layout(margin=dict(l=50, r=20, t=20, b=50))
+        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=50, r=20, t=20, b=50))
         fig.update_xaxes(tickformat=xf, type='date')
         fig.update_yaxes(range=[0, y_m], tickformat=",d")
         st.plotly_chart(fig, use_container_width=True)
     except:
-        st.info("Graph Wait...")
+        st.info("グラフ生成中...")
 
 else:
-    st.info("No Data.")
+    st.info("データが読み込めません。")
 
 # --- 6. 更新フォーム ---
 st.divider()
@@ -156,7 +162,7 @@ up_file = st.file_uploader("スクショ選択", type=['png', 'jpg', 'jpeg'])
 
 if st.button("AI解析"):
     if up_file:
-        with st.spinner('Wait...'):
+        with st.spinner('解析中...'):
             res = perform_ai_analysis(up_file)
             if res:
                 st.session_state.ocr_data = res
@@ -173,10 +179,7 @@ if st.session_state.analyzed:
         if st.form_submit_button("記録"):
             td = datetime.now().strftime('%Y/%m/%d')
             tv = n_c + n_s + n_m
-            ent = pd.DataFrame([{
-                "日付": td, "現物買付余力": n_c, "現物時価総額": n_s,
-                "信用評価損益": n_m, "総資産": tv, "1億円までの残り": GOAL - tv
-            }])
+            ent = pd.DataFrame([{"日付": td, "現物買付余力": n_c, "現物時価総額": n_s, "信用評価損益": n_m, "総資産": tv, "1億円までの残り": GOAL - tv}])
             try:
                 out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
                 out['日付'] = pd.to_datetime(out['日付'])
