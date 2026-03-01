@@ -24,44 +24,50 @@ except:
 
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# セッション状態
 if 'analyzed' not in st.session_state:
     st.session_state.analyzed = False
 if 'ocr_data' not in st.session_state:
     st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
 
-# --- 3. AI解析エンジン ---
+# --- 3. AI関数 ---
 def perform_ai_analysis(up_file):
-    p = '抽出項目：{"cash": 数値, "spot": 数値, "margin": 数値}'
+    p = '抽出：{"cash": 数値, "spot": 数値, "margin": 数値}'
     try:
         img = Image.open(up_file)
         res = model.generate_content([p, img])
         j_str = re.search(r'\{.*\}', res.text, re.DOTALL).group()
         return json.loads(j_str)
-    except:
-        return None
+    except: return None
 
 @st.cache_data(ttl=3600)
 def get_market_brief(d_key):
-    p = f"本日は{d_key}。日本・海外の重要指標と決算、🚨重要イベントを簡潔にリスト化して。"
+    # AIが拒否しにくいよう「公知のカレンダー要約」として依頼
+    p = f"""
+    本日は {d_key} です。投資家向けの「週明けの経済カレンダー」を作成してください。
+    1. 国内決算：3月上旬に予定されている主要企業の決算予定。
+    2. 重要指標：日米欧中で、月初（1日〜5日）に発表される重要指標（PMI、雇用統計等）。
+    3. 🚨注目：相場変動の要因になりそうなイベントを太字で。
+    ※投資助言ではなく、一般情報のまとめとして出力してください。
+    """
     try:
         res = model.generate_content(p)
-        return res.text if res.text else "取得制限中"
-    except:
-        return "マーケット情報は準備中です。"
+        if res and res.text:
+            return res.text
+        return "🚨 AI応答が空です。リロードしてください。"
+    except Exception as e:
+        return f"💡 取得エラー: API制限または通信不安定 (詳細: {str(e)[:20]})"
 
 # --- 4. データ処理 ---
 df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=URL, ttl=0)
 except:
-    st.warning("スプレッドシート接続待ち...")
+    st.warning("シート接続待ち...")
 
-# --- 5. メイン画面 ---
+# --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
 
 if not df_raw.empty:
-    # データ正規化
     df_raw['日付'] = pd.to_datetime(df_raw['日付']).dt.normalize()
     df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
     
@@ -71,13 +77,12 @@ if not df_raw.empty:
     # 指標計算
     d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
     tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
-    tm_diff = total - tm_df.iloc[0]['総資産']
+    tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
     
-    lm_day = ld.replace(day=1) - timedelta(days=1)
-    lm_df = df[df['日付'].dt.to_period('M') == lm_day.to_period('M')]
+    lm_target = ld.replace(day=1) - timedelta(days=1)
+    lm_df = df[df['日付'].dt.to_period('M') == lm_target.to_period('M')]
     lm_diff = lm_df.iloc[-1]['総資産'] - lm_df.iloc[0]['総資産'] if not lm_df.empty else 0
 
-    # メトリックス表示
     st.subheader("📊 資産状況ダッシュボード")
     cols = st.columns([1.2, 1, 1, 1, 1])
     
@@ -89,40 +94,38 @@ if not df_raw.empty:
     
     cols[1].metric("1億円まで", f"¥{int(GOAL - total):,}")
     cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
-    cols[3].metric(f"{lm_day.month}月収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
+    cols[3].metric(f"{lm_target.month}月収支", f"¥{int(lm_diff):,}", delta=f"{int(lm_diff):+,}")
     cols[4].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
     
     st.progress(max(0.0, min(float(total / GOAL), 1.0)), text=f"達成率: {total/GOAL:.2%}")
 
-    # AIイベントダイジェスト
+    # AIダイジェスト
     st.markdown("---")
     with st.expander("🗓️ 本日の投資イベント・ダイジェスト", expanded=True):
         st.write(get_market_brief(datetime.now().strftime('%Y-%m-%d')))
 
-    # グラフエリア
+    # グラフ
     st.divider()
     vc, uc = st.columns([3, 1])
-    with vc:
-        st.write("### 🏔️ 資産成長トレンド")
-    with uc:
-        v_mode = st.radio("表示単位", ["日", "週", "月"], horizontal=True)
+    with vc: st.write("### 🏔️ 資産成長トレンド")
+    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
 
     if v_mode == "日":
         p_df = df[df['日付'] >= (ld - timedelta(days=7))].copy()
         if len(p_df) < 2: p_df = df.copy()
-        x_fmt, dtk = "%m/%d", None
+        xf, dtk = "%m/%d", None
     elif v_mode == "週":
         p_df = df.set_index('日付').resample('W').last().dropna().tail(12).reset_index()
         if len(p_df) < 2: p_df = df.copy()
-        x_fmt, dtk = "%m/%d", None
+        xf, dtk = "%m/%d", None
     else:
         df_m = df.copy()
         df_m['m'] = df_m['日付'].dt.to_period('M')
         p_df = df_m.groupby('m').tail(1).copy().tail(12).reset_index(drop=True)
         if len(p_df) < 2: p_df = df.copy()
-        x_fmt, dtk = "%y/%m", "M1"
+        xf, dtk = "%y/%m", "M1"
 
-    y_max = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
+    y_m = p_df['総資産'].max() * 1.15 if not p_df.empty else 1000000
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
@@ -131,8 +134,8 @@ if not df_raw.empty:
     ))
     fig.update_layout(
         template="plotly_dark", height=400, margin=dict(l=50, r=20, t=20, b=50),
-        xaxis=dict(tickformat=x_fmt, dtick=dtk, type='date'),
-        yaxis=dict(range=[0, y_max], tickformat=",d"),
+        xaxis=dict(tickformat=xf, dtick=dtk, type='date'),
+        yaxis=dict(range=[0, y_m], tickformat=",d"),
         hovermode="x unified"
     )
     st.plotly_chart(fig, use_container_width=True)
@@ -151,7 +154,7 @@ if st.button("AI解析を実行"):
             if res:
                 st.session_state.ocr_data = res
                 st.session_state.analyzed = True
-                st.success("解析成功！内容を確認してください。")
+                st.success("成功！")
 
 if st.session_state.analyzed:
     with st.form("edit_form"):
