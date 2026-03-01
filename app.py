@@ -46,7 +46,7 @@ df_raw = pd.DataFrame()
 try:
     df_raw = conn.read(spreadsheet=SPREADSHEET_URL, ttl=0)
 except Exception:
-    st.warning("スプレッドシートが見つかりません。")
+    st.warning("スプレッドシートの読み込みに失敗しました。")
 
 # --- 5. メイン表示 ---
 st.title("🚀 Wealth Navigator PRO")
@@ -62,7 +62,9 @@ if not df_raw.empty:
         total = latest['総資産']
         
         # 内訳
-        s_v, m_v, c_v = latest['現物時価総額'], latest['信用評価損益'], latest['現物買付余力']
+        s_v = latest['現物時価総額']
+        m_v = latest['信用評価損益']
+        c_v = latest['現物買付余力']
         
         # 指標
         daily = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
@@ -76,19 +78,3 @@ if not df_raw.empty:
         # メトリックス
         st.subheader("📊 資産状況ダッシュボード")
         m_cols = st.columns([1.2, 1, 1, 1, 1])
-        with m_cols[0]:
-            st.metric("現在の総資産", f"¥{int(total):,}")
-            st.caption(f"┣ 現物資産時価総額: ¥{int(s_v):,}")
-            st.caption(f"┣ 信用保有資産損益: ¥{int(m_v):+,}")
-            st.caption(f"┗ 現物取得余力: ¥{int(c_v):,}")
-        
-        m_cols[1].metric("1億円まであと", f"¥{int(GOAL_AMOUNT - total):,}")
-        m_cols[2].metric("前日比", f"¥{int(daily):,}", delta=f"{int(daily):+,}")
-        m_cols[3].metric(f"{last_mo_day.month}月の収支", f"¥{int(last_mo_diff):,}", delta=f"{int(last_mo_diff):+,}")
-        m_cols[4].metric(f"{l_date.month}月の収支", f"¥{int(this_mo_diff):,}", delta=f"{int(this_mo_diff):+,}")
-        st.progress(min(float(total / GOAL_AMOUNT), 1.0), text=f"目標達成率: {total/GOAL_AMOUNT:.2%}")
-
-        # グラフ
-        st.divider()
-        v_c, u_c = st.columns([3, 1])
-        with v_c
