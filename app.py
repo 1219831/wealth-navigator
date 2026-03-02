@@ -1,51 +1,47 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime
-import google.generativeai as genai
+from datetime import datetime as dt
+import google.generativeai as gai
 from PIL import Image
 import plotly.graph_objects as go
 
 # --- 1. 基本設定 ---
-GOAL = 100000000 
+GOAL = 100000000
 URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwWt0aWJEa_Is/edit"
-
-st.set_page_config(page_title="Wealth Nav Pro", layout="wide", page_icon="📈")
+st.set_page_config(page_title="WealthNav", layout="wide")
 
 # --- 2. API連携 ---
 try:
-    api_key = st.secrets["GEMINI_API_KEY"].strip()
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    api = st.secrets["GEMINI_API_KEY"].strip()
+    gai.configure(api_key=api)
+    model = gai.GenerativeModel("gemini-1.5-flash")
 except:
-    st.error("API設定エラー")
+    st.error("API Error")
     st.stop()
 
-# --- 3. データ取得 ---
+# --- 3. データ処理 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-
-def load_data():
+def load():
     try:
         raw = conn.read(spreadsheet=URL, ttl=0)
         if raw.empty: return None
-        raw["日付"] = pd.to_datetime(raw["日付"], errors="coerce")
-        df = raw.dropna(subset=["日付"]).sort_values("日付").drop_duplicates("日付", keep="last").reset_index(drop=True)
-        return df
-    except:
-        return None
+        raw["日付"] = pd.to_datetime(raw["日付"])
+        return raw.dropna(subset=["日付"]).sort_values("日付").drop_duplicates("日付", keep="last").reset_index(drop=True)
+    except: return None
 
-df = load_data()
+df = load()
 
 # --- 4. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
 
-if df is not None and not df.empty:
+if df is not None:
     L = df.iloc[-1]
     T = L["総資産"]
     M = L["信用評価損益"]
-    now = datetime.now()
-    
-    # 収支計算 (今日・先月・今月)
+    now = dt.now()
+
+    # 収支計算
     d_g, m_g, p_g = 0, 0, 0
     try:
         if len(df) > 1: d_g = T - df.iloc[-2]["総資産"]
@@ -57,41 +53,38 @@ if df is not None and not df.empty:
         if not ld.empty: p_g = ld.iloc[-1]["総資産"] - ld.iloc[0]["総資産"]
     except: pass
 
-    # A. 資産ダッシュボード (順序厳守)
-    st.subheader("📊 資産状況 & 収支成績")
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
+    # A. 資産ダッシュボード (今日 -> 先月 -> 今月)
+    st.subheader("📊 収支成績 & 状況")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("今日の収支", f"¥{int(d_g):+}")
+    c1.write(f"総資産: ¥{int(T):,}")
     
-    with c1:
-        st.metric("今日の収支", "¥" + str(int(d_g)))
-        st.write("総資産:", "¥" + str(int(T)))
-    with c2:
-        st.metric("先月の収支", "¥" + str(int(p_g)))
-        st.write("信用損益:", "¥" + str(int(M)))
-    with c3:
-        st.metric("今月の収支", "¥" + str(int(m_g)))
-        st.write("買付余力:", "¥" + str(int(L["現物買付余力"])))
-    with c4:
-        st.metric("1億円まで", "¥" + str(int(GOAL - T)))
-        st.write("達成率:", str(round(T/GOAL*100, 4)) + "%")
-        st.progress(max(0.0, min(float(T/GOAL), 1.0)))
+    c2.metric("先月の収支", f"¥{int(p_g):+}")
+    c2.write(f"信用損益: ¥{int(M):+}")
+    
+    c3.metric("今月の収支", f"¥{int(m_g):+}")
+    c3.write(f"余力: ¥{int(L['現物買付余力']):,}")
+    
+    c4.metric("1億円まで", f"¥{int(GOAL - T):,}")
+    pct = T/GOAL
+    c4.write(f"達成率: {pct:.4%}")
+    st.progress(max(0.0, min(float(pct), 1.0)))
 
-    # B. 参謀本部 (断線してもエラーにならない構造)
+    # B. 参謀本部
     st.divider()
-    st.subheader("⚔️ 参謀本部：決戦指令ボード")
-    st.success("📈 **【3/3 注目】**: 日本市場寄り付き / 米国指標の波及警戒")
+    st.subheader("⚔️ 参謀本部")
+    st.success("📈 3/3: 寄り付き注意 / 伊藤園・ピープル決算反応 / 今夜米指標")
     
-    p_t = "投資参謀として、信用損益 " + str(M) + "円のボスに、明日の具体的行動を120字で指令せよ。"
+    p = f"投資参謀として信用損益{M}円のボスへ。明日寄り付きの具体的行動を100字で指令せよ。"
     try:
-        res = model.generate_content(p_t)
-        # 変数に入れてから表示することで、クォート断線を回避
-        msg_txt = res.text
-        st.info(msg_txt)
-    except:
-        st.warning("参謀指令：市場のボラティリティに備え、余力を維持せよ。")
+        res = model.generate_content(p)
+        if res.text: st.info(res.text)
+    except: st.warning("指令：ボラ増大に備え、余力維持を最優先せよ。")
 
-    # C. グラフ (ID重複を避ける短いキー)
+    # C. グラフ (不具合対策: IDを極小化)
     st.divider()
-    st.write("### 🏔️ 資産トレンド")
-    tabs = st.tabs(["日次", "週次", "月次"])
-    def pf(data):
-        fig = go.Figure(go.Scatter(x=data["日付"], y=data["総資産"], fill="tozeroy
+    st.write("### 🏔️ トレンド")
+    t1, t2, t3 = st.tabs(["日", "週", "月"])
+    
+    def fig(d):
+        f = go.Figure(go.Scatter(x=d["日付"], y=d["総資産"],
