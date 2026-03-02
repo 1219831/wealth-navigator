@@ -1,146 +1,190 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
-from datetime import datetime as dt
-import google.generativeai as gai
+from datetime import datetime, timedelta
+import google.generativeai as genai
 from PIL import Image
+import json
+import re
 import plotly.graph_objects as go
 
 # --- 1. 基本設定 ---
-GOAL = 100000000
+GOAL = 100000000 
 URL = "https://docs.google.com/spreadsheets/d/1-Elv0TZJb6dVwHoGCx0fQinN2B1KYPOwWt0aWJEa_Is/edit"
-st.set_page_config(page_title="WealthNav", layout="wide")
 
-# --- 2. API連携 ---
-try:
-    gai.configure(api_key=st.secrets["GEMINI_API_KEY"].strip())
-    model = gai.GenerativeModel("gemini-1.5-flash")
-except:
-    st.error("API設定エラー"); st.stop()
+st.set_page_config(page_title="Wealth Nav", page_icon="📈", layout="wide")
 
-# --- 3. データ処理 ---
-conn = st.connection("gsheets", type=GSheetsConnection)
-df_raw = conn.read(spreadsheet=URL, ttl=0)
+# --- 2. 外部連携 (接続リトライ機能付き) ---
+def get_gemini_model():
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    # 複数のエンドポイントを試行して接続を確保
+    for m_name in ["models/gemini-1.5-flash", "gemini-1.5-flash", "models/gemini-pro"]:
+        try:
+            m = genai.GenerativeModel(m_name)
+            # 疎通確認
+            m.generate_content("Hi", generation_config={"max_output_tokens": 1})
+            return m
+        except: continue
+    return None
 
-if df_raw.empty:
-    st.warning("スプレッドシートが空、または読み込めません。")
+model = get_gemini_model()
+if not model:
+    st.error("API接続に失敗しました。Keyを確認してください。")
     st.stop()
 
-df = df_raw.copy()
-df["日付"] = pd.to_datetime(df["日付"])
-df = df.dropna(subset=["日付"]).sort_values("日付")
-df = df.drop_duplicates("日付", keep="last").reset_index(drop=True)
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# --- 4. メイン画面 ---
+if 'analyzed' not in st.session_state:
+    st.session_state.analyzed = False
+if 'ocr_data' not in st.session_state:
+    st.session_state.ocr_data = {"cash": 0, "spot": 0, "margin": 0}
+
+# --- 3. AI分析エンジン ---
+def perform_ai_analysis(up_file):
+    p = '抽出項目：{"cash": 数値, "spot": 数値, "margin": 数値}'
+    try:
+        img = Image.open(up_file)
+        res = model.generate_content([p, img])
+        j_str = re.search(r'\{.*\}', res.text, re.DOTALL).group()
+        return json.loads(j_str)
+    except: return None
+
+@st.cache_data(ttl=3600)
+def get_market_briefing(d_str, is_weekend):
+    if is_weekend:
+        p = f"今日は{d_str}(週末)。先週の米株日本株振り返りと、明日からの決算・指標予定を短くまとめて。"
+    else:
+        p = f"今日は{d_str}(平日)。昨晩の米株動向、本日の日本株見通し、重要決算・指標を短くまとめて。"
+    
+    try:
+        res = model.generate_content(p)
+        return res.text if res.text else "情報の取得制限中です。"
+    except:
+        return "💡 市場データを整理中。リロードするか、少し時間をおいてください。"
+
+# --- 4. データ読み込み ---
+df_raw = pd.DataFrame()
+try:
+    df_raw = conn.read(spreadsheet=URL, ttl=0)
+except:
+    st.warning("Sheet Wait...")
+
+# --- 5. メイン画面 ---
 st.title("🚀 Wealth Navigator PRO")
-L = df.iloc[-1]
-T = L["総資産"]
-M = L["信用評価損益"]
-now = dt.now()
 
-# 収支計算
-d_g, m_g, p_g = 0, 0, 0
-try:
-    if len(df) > 1:
-        d_g = T - df.iloc[-2]["総資産"]
+if not df_raw.empty:
+    df_raw['日付'] = pd.to_datetime(df_raw['日付'], errors='coerce')
+    df_raw = df_raw.dropna(subset=['日付'])
+    df = df_raw.sort_values('日付').drop_duplicates('日付', keep='last').reset_index(drop=True)
     
-    # 今月 (1日以降)
-    ms_date = now.replace(day=1, hour=0, minute=0, second=0)
-    m_s = df[df["日付"] >= ms_date]
-    if not m_s.empty:
-        m_g = T - m_s.iloc[0]["総資産"]
+    latest = df.iloc[-1]
+    ld, total = latest['日付'], latest['総資産']
     
-    # 先月
-    le_date = ms_date
-    ls_date = (le_date - pd.DateOffset(months=1))
-    ld = df[(df["日付"] >= ls_date) & (df["日付"] < le_date)]
-    if not ld.empty:
-        p_g = ld.iloc[-1]["総資産"] - ld.iloc[0]["総資産"]
-except:
-    pass
+    # 指標計算
+    d_diff = total - df.iloc[-2]['総資産'] if len(df) > 1 else 0
+    tm_df = df[df['日付'].dt.to_period('M') == ld.to_period('M')]
+    tm_diff = total - tm_df.iloc[0]['総資産'] if not tm_df.empty else 0
+    
+    # 1. ダッシュボード
+    st.subheader("📊 資産状況")
+    cols = st.columns([1.2, 1, 1, 1, 1])
+    with cols[0]:
+        st.metric("総資産", f"¥{int(total):,}")
+        st.caption(f"┣ 現物時価: ¥{int(latest['現物時価総額']):,}")
+        st.caption(f"┣ 信用損益: ¥{int(latest['信用評価損益']):+,}")
+        st.caption(f"┗ 買付余力: ¥{int(latest['現物買付余力']):,}")
+    
+    cols[1].metric("目標まで", f"¥{int(GOAL - total):,}")
+    cols[2].metric("前日比", f"¥{int(d_diff):,}", delta=f"{int(d_diff):+,}")
+    cols[3].metric(f"{ld.month}月収支", f"¥{int(tm_diff):,}", delta=f"{int(tm_diff):+,}")
+    cols[4].metric("達成率", f"{total/GOAL:.2%}")
+    
+    prg_v = max(0.0, min(float(total / GOAL), 1.0))
+    st.progress(prg_v)
 
-# --- A. 資産ダッシュボード (順序: 今日 -> 先月 -> 今月) ---
-st.subheader("📊 収支成績 & 資産状況")
-c1, c2, c3, c4 = st.columns(4)
+    # 2. 【動的】AIマーケットダイジェスト
+    st.divider()
+    now = datetime.now()
+    is_weekend = now.weekday() >= 5 # 5:土, 6:日
+    title = "🗓️ 週末マーケット要約" if is_weekend else "📈 本日のマーケット要約"
+    st.subheader(title)
+    
+    t_key = now.strftime('%Y-%m-%d')
+    st.markdown(get_market_briefing(t_key, is_weekend))
 
-with c1:
-    st.metric("今日の収支", "¥" + str(int(d_g)))
-    st.write("総資産: ¥" + str(int(T)))
+    # 3. グラフ
+    st.divider()
+    vc, uc = st.columns([3, 1])
+    with vc: st.write("### 🏔️ 資産トレンド")
+    with uc: v_mode = st.radio("表示", ["日", "週", "月"], horizontal=True)
 
-with c2:
-    st.metric("先月の収支", f"¥{int(p_g):,}")
-    st.write("信用損益: ¥" + str(int(M)))
+    try:
+        if v_mode == "日":
+            p_df = df[df['日付'] >= (ld - timedelta(days=30))].copy()
+            xf = "%m/%d"
+        elif v_mode == "週":
+            p_df = df.set_index('日付').resample('W').last().dropna().reset_index()
+            xf = "%m/%d"
+        else:
+            p_df = df.set_index('日付').resample('M').last().dropna().reset_index()
+            xf = "%y/%m"
+        
+        if p_df.empty: p_df = df.copy()
 
-with c3:
-    st.metric("今月の収支", f"¥{int(m_g):,}")
-    st.write("余力: ¥" + str(int(L["現物買付余力"])))
+        y_m = p_df['総資産'].max() * 1.15
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=p_df['日付'], y=p_df['総資産'], fill='tozeroy', 
+            line=dict(color='#007BFF', width=4), fillcolor='rgba(0, 123, 255, 0.15)',
+            mode='lines+markers' if len(p_df) < 20 else 'lines'
+        ))
+        fig.update_layout(template="plotly_dark", height=400)
+        fig.update_layout(margin=dict(l=50, r=20, t=20, b=50))
+        fig.update_xaxes(tickformat=xf, type='date')
+        fig.update_yaxes(range=[0, y_m], tickformat=",d")
+        st.plotly_chart(fig, use_container_width=True)
+    except:
+        st.info("Graph Wait...")
 
-with c4:
-    st.metric("1億円まで", "¥" + str(int(GOAL - T)))
-    st.progress(max(0.0, min(float(T/GOAL), 1.0)))
-
-# --- B. 参謀本部 ---
-st.divider()
-st.subheader("⚔️ 参謀本部")
-st.success("📈 3/3注目: 伊藤園・ピープル決算反応 / 今夜米ISM指数 / ドル円動向")
-
-prompt = "信用損益" + str(M) + "円のボスへ、明日寄り付きの具体的行動を100字で指令せよ。"
-try:
-    res = model.generate_content(prompt)
-    if res.text:
-        st.info(res.text)
-except:
-    st.warning("参謀指令：ボラティリティ警戒。余力維持を最優先せよ。")
-
-# --- C. 資産トレンドグラフ (タブを使わず直列表示で確認) ---
-st.divider()
-st.subheader("🏔️ 資産トレンド推移")
-
-# グラフ作成用関数
-def make_chart(data, title_text):
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=data["日付"], 
-        y=data["総資産"], 
-        mode='lines+markers',
-        fill='tozeroy',
-        line=dict(color='#007BFF', width=3)
-    ))
-    fig.update_layout(
-        title=title_text,
-        template="plotly_dark",
-        height=400,
-        margin=dict(l=20, r=20, t=40, b=20),
-        xaxis=dict(showgrid=False),
-        yaxis=dict(showgrid=True, gridcolor='gray')
-    )
-    return fig
-
-# 期間切り替え用のラジオボタン
-period = st.radio("表示期間:", ["日次", "週次", "月次"], horizontal=True)
-
-if period == "日次":
-    st.plotly_chart(make_chart(df, "Daily Trend"), use_container_width=True)
-elif period == "週次":
-    df_w = df.set_index("日付").resample("W").last().dropna().reset_index()
-    st.plotly_chart(make_chart(df_w, "Weekly Trend"), use_container_width=True)
 else:
-    df_m = df.set_index("日付").resample("M").last().dropna().reset_index()
-    st.plotly_chart(make_chart(df_m, "Monthly Trend"), use_container_width=True)
+    st.info("No Data.")
 
-# --- 5. 更新 (3枚同時解析) ---
+# --- 6. 更新フォーム ---
 st.divider()
-st.subheader("📸 スクショ更新 (最大3枚同時選択)")
-ups = st.file_uploader("証券アプリの画像を選択", accept_multiple_files=True)
+st.subheader("📸 資産更新")
+up_file = st.file_uploader("スクショ選択", type=['png', 'jpg', 'jpeg'])
 
-if st.button("AI統合解析実行"):
-    if ups:
-        with st.spinner("AIが複数画像をスキャン中..."):
+if st.button("AI解析"):
+    if up_file:
+        with st.spinner('Wait...'):
+            res = perform_ai_analysis(up_file)
+            if res:
+                st.session_state.ocr_data = res
+                st.session_state.analyzed = True
+                st.success("OK!")
+
+if st.session_state.analyzed:
+    with st.form("edit"):
+        c1, c2, c3 = st.columns(3)
+        ocr = st.session_state.ocr_data
+        n_c = c1.number_input("余力", value=int(ocr.get('cash', 0)))
+        n_s = c2.number_input("時価", value=int(ocr.get('spot', 0)))
+        n_m = c3.number_input("損益", value=int(ocr.get('margin', 0)))
+        if st.form_submit_button("記録"):
+            td = datetime.now().strftime('%Y/%m/%d')
+            tv = n_c + n_s + n_m
+            ent = pd.DataFrame([{
+                "日付": td, "現物買付余力": n_c, "現物時価総額": n_s,
+                "信用評価損益": n_m, "総資産": tv, "1億円までの残り": GOAL - tv
+            }])
             try:
-                ins = ["画像から現物時価,買付余力,信用損益を数値で抽出せよ。"]
-                for f in ups[:3]:
-                    ins.append(Image.open(f))
-                r = model.generate_content(ins)
-                st.write("解析結果:", r.text)
+                out = pd.concat([df_raw, ent], ignore_index=True) if not df_raw.empty else ent
+                out['日付'] = pd.to_datetime(out['日付'])
+                out = out.sort_values('日付').drop_duplicates('日付', keep='last')
+                out['日付'] = out['日付'].dt.strftime('%Y/%m/%d')
+                conn.update(spreadsheet=URL, data=out)
+                st.balloons()
+                st.session_state.analyzed = False
+                st.rerun()
             except Exception as e:
-                st.error("解析失敗: " + str(e))
+                st.error(f"Error: {e}")
