@@ -18,13 +18,21 @@ try:
 except:
     st.error("API設定エラー"); st.stop()
 
-# --- 3. データ処理 ---
+# --- 3. データ取得 & 洗浄 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 raw = conn.read(spreadsheet=URL, ttl=0)
 if raw.empty: st.stop()
 
 df = raw.copy()
 df["日付"] = pd.to_datetime(df["日付"])
+
+# ★数値列の洗浄：カンマや¥を消して数値化
+cols = ["総資産", "現物時価総額", "信用評価損益", "現物買付余力"]
+for c in cols:
+    if c in df.columns:
+        df[c] = df[c].astype(str).replace('[,¥]', '', regex=True)
+        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0).astype(int)
+
 df = df.dropna(subset=["日付"]).sort_values("日付").drop_duplicates("日付", keep="last").reset_index(drop=True)
 
 # --- 4. 資産解析 ---
@@ -35,7 +43,7 @@ S = int(L["現物時価総額"])
 C = int(L["現物買付余力"])
 now = dt.now()
 
-# 収支計算 (エラー回避ロジック)
+# 収支計算
 d_g, m_g, p_g = 0, 0, 0
 try:
     if len(df) > 1: d_g = T - int(df.iloc[-2]["総資産"])
@@ -48,7 +56,7 @@ try:
 except: pass
 
 # --- 5. メイン画面 (総資産 -> 今日 -> 今月 -> 先月) ---
-st.title("📈 Wealth Navigator PRO")
+st.title("🚀 Wealth Navigator PRO")
 c1, c2, c3, c4 = st.columns(4)
 
 with c1:
@@ -69,16 +77,15 @@ with c4:
     st.metric("⏳ 先月の収支", "¥ " + "{:,}".format(p_g))
     st.write("達成率: ", "{:.4%}".format(T/GOAL))
 
-# --- 6. 参謀本部 (動的イベント) ---
+# --- 6. 参謀本部 ---
 st.divider()
-st.subheader("⚔️ 参謀本部：最新戦略")
-p = "今日は2026年3月3日。信用損益" + str(M) + "円のボスへ、明日の寄り付き行動を120字で指令せよ。"
+p = "投資参謀として、信用損益 " + str(M) + "円のボスに、最新の市場動向を踏まえた戦略を120字で指令せよ。"
 try:
     res = model.generate_content(p)
     if res.text: st.info(res.text)
 except: st.warning("指令：ボラ警戒。余力を維持せよ。")
 
-# --- 7. グラフ (プロ仕様) ---
+# --- 7. グラフ ---
 st.divider()
 def draw(d, k):
     d["MA5"] = d["総資産"].rolling(5).mean()
@@ -95,11 +102,4 @@ else: draw(df.set_index("日付").resample("M").last().dropna().reset_index(), "
 
 # --- 8. 更新 (3枚解析) ---
 st.divider()
-ups = st.file_uploader("スクショ(3枚可)", accept_multiple_files=True)
-if st.button("AI解析") and ups:
-    with st.spinner("Analyzing..."):
-        try:
-            ims = ["画像から現物時価,買付余力,信用損益を数値で抽出せよ"] + [Image.open(f) for f in ups[:3]]
-            r = model.generate_content(ims)
-            st.write(r.text)
-        except Exception as e: st.error(str(e))
+ups = st.
