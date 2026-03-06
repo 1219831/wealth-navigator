@@ -17,7 +17,7 @@ st.set_page_config(page_title="WealthNav PRO", layout="wide")
 def init_ai():
     try:
         gai.configure(api_key=st.secrets["GEMINI_API_KEY"].strip())
-        return gai.GenerativeModel("gemini-1.5-flash")
+        return gai.GenerativeModel('gemini-1.5-flash')
     except: return None
 
 conn = st.connection("gsheets", type=GSheetsConnection)
@@ -67,10 +67,9 @@ if df is not None:
     st.divider()
     if model:
         try:
-            p = "今日は2026/03/07土曜。投資参謀として昨夜の米雇用統計結果の総括と、来週月曜の戦略、ボスの信用損益({}円)への助言を150字で。表形式含。".format(M)
-            res = model.generate_content(p)
-            st.info(res.text)
-        except: st.warning("市場調査エラー")
+            p = "今日は2026/03/07。投資参謀として昨夜の米雇用統計結果と来週の戦略を、ボスの信用損益({}円)を踏まえ150字で。表形式含。".format(M)
+            st.info(model.generate_content(p).text)
+        except: st.warning("市場調査中...")
 
     # --- 5. グラフ ---
     def draw(data, k):
@@ -87,19 +86,45 @@ if df is not None:
     elif "週次" in tab: draw(v_df.set_index("日付").resample("W").last().dropna().reset_index(), "w")
     else: draw(v_df.set_index("日付").resample("M").last().dropna().reset_index(), "m")
 
-# --- 6. 更新 & Drive書き出し ---
+# --- 6. 写真解析 & Drive書き出し (徹底デバッグ済) ---
 st.divider()
-st.subheader("📸 スマホ更新 & 記録")
-ups = st.file_uploader("証券スクショ(3枚まで)", accept_multiple_files=True)
-if st.button("🚀 AI解析実行", use_container_width=True, type="primary") and ups:
+st.subheader("📸 スマホ更新：証券キャプチャ解析・記録")
+ups = st.file_uploader("スクショを選択(3枚まで)", accept_multiple_files=True)
+
+if st.button("🚀 AI解析を実行", use_container_width=True, type="primary") and ups:
     with st.spinner("解析中..."):
         try:
-            ims = ["画像から現物時価,買付余力,信用損益を抽出せよ。"] + [Image.open(f).convert("RGB") for f in ups[:3]]
-            r = model.generate_content(ims).text
+            prompt = """松井証券の画像から以下の数値を抽出し、この形式で返せ。
+            現物時価:数字
+            現物買付余力:数字
+            信用評価損益:数字
+            ※「数字」以外の文字は入れないこと。"""
+            ims = [prompt] + [Image.open(f).convert("RGB") for f in ups[:3]]
+            res = model.generate_content(ims).text
             st.success("解析完了")
-            st.write(r)
-            # 自動書込ボタン (※Service Account設定済みの場合のみ動作)
-            if st.button("✅ Driveへ保存"):
-                # ここに conn.create(data=...) の処理を追加可能
-                st.write("保存機能：SecretsのService Account設定を確認してください。")
-        except Exception as e: st.error(str(e))
+            st.write(res)
+            
+            # 解析結果を数値化してDrive書き出しの準備
+            lines = res.split("\n")
+            ext = {}
+            for l in lines:
+                if ":" in l:
+                    k, v = l.split(":")
+                    ext[k.strip()] = int(pd.to_numeric(v.replace(',','').strip(), errors='coerce'))
+            
+            # 書き出しデータ作成
+            new_row = pd.DataFrame([{
+                "日付": dt.now().strftime("%Y/%m/%d"),
+                "総資産": ext.get("現物時価", 0) + ext.get("現物買付余力", 0) + ext.get("信用評価損益", 0),
+                "現物時価総額": ext.get("現物時価", 0),
+                "現物買付余力": ext.get("現物買付余力", 0),
+                "信用評価損益": ext.get("信用評価損益", 0)
+            }])
+            
+            # 書き出し実行 (※Service Account認証が必要)
+            conn.create(spreadsheet=URL, data=new_row)
+            st.balloons()
+            st.success("スプレッドシートの末尾に記録しました！")
+        except Exception as e:
+            st.error("解析または書込失敗: " + str(e))
+            st.info("💡 書込にはSecretsのService Account設定が必要です。")
