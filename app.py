@@ -95,4 +95,27 @@ if df is not None:
     c2.metric("📅 今日の収支", "¥ {:+,}".format(int(d_g)))
     c3.metric("🗓️ 今月の収支合計", "¥ {:+,}".format(int(m_g)))
     c4.metric("⏳ 先月の収支合計", "¥ {:+,}".format(int(p_g)))
-    st.progress(max(0.0, min(float(cur_t/GOAL), 1.0)), text="
+    st.progress(max(0.0, min(float(cur_t/GOAL), 1.0)), text="目標達成率: {:.2%}".format(cur_t/GOAL))
+
+    # --- 5. 参謀本部：市場調査 (2026/03/07 土曜) ---
+    st.divider()
+    if model:
+        try:
+            p = "今日は2026/03/07土曜。昨夜の米雇用統計結果(NFP)を踏まえ、来週月曜の日本市場への影響と、ボスの信用損益({}円)への具体的な戦略を150字で。表形式含。".format(cur_m)
+            st.info(model.generate_content(p).text)
+        except: st.warning("市場調査中...")
+
+    # --- 6. グラフ ---
+    def draw(data, k):
+        data["MA5"] = data["総資産"].rolling(5, min_periods=1).mean()
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=data["日付"], y=data["総資産"], name="資産", fill='tozeroy', line=dict(color='#007BFF', width=3)))
+        fig.add_trace(go.Scatter(x=data["日付"], y=data["MA5"], name="5日線", line=dict(color='#FFA500', dash='dot')))
+        y_r = [data["総資産"].min()*0.95, data["総資産"].max()*1.05]
+        fig.update_layout(template="plotly_dark", height=400, margin=dict(l=10, r=10, t=10, b=10), yaxis=dict(range=y_r, tickformat=",.0f"))
+        st.plotly_chart(fig, use_container_width=True, key=k)
+
+    tab = st.radio("表示切替:", ["日次", "週次", "月次"], horizontal=True)
+    if "日次" in tab: draw(v_df, "d")
+    elif "週次" in tab: draw(v_df.set_index("日付").resample("W").last().dropna().reset_index(), "w")
+    else: draw(v_df.set_index("日付").resample("M").last().dropna().reset_index(), "m")
